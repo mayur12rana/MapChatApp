@@ -1,0 +1,456 @@
+<Window x:Class="ChatMapperApp.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:ChatMapperApp.ViewModels"
+        xmlns:conv="clr-namespace:ChatMapperApp.Converters"
+        xmlns:models="clr-namespace:ChatMapperApp.Models"
+        Title="{Binding WindowTitle}"
+        Height="900" Width="1440" MinHeight="640" MinWidth="960"
+        WindowStartupLocation="CenterScreen"
+        AllowDrop="True"
+        DragOver="Window_DragOver"
+        Drop="Window_Drop">
+
+    <Window.DataContext>
+        <vm:MainViewModel/>
+    </Window.DataContext>
+
+    <Window.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVis"/>
+        <conv:InverseBoolToVisibilityConverter x:Key="InvBoolToVis"/>
+        <conv:MappedIndicatorConverter x:Key="MappedColor"/>
+        <conv:NodeTypeIconConverter x:Key="NodeIcon"/>
+        <conv:NodeTypeForegroundConverter x:Key="NodeFg"/>
+        <conv:StringNotEmptyToVisibilityConverter x:Key="StrToVis"/>
+
+        <!-- TreeViewItem style with visual Start/End markers -->
+        <Style x:Key="TreeItemStyle" TargetType="TreeViewItem">
+            <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+            <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}"/>
+            <Setter Property="FontFamily" Value="Consolas"/>
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="Padding" Value="2,2"/>
+        </Style>
+    </Window.Resources>
+
+    <Window.InputBindings>
+        <KeyBinding Key="O" Modifiers="Ctrl" Command="{Binding OpenFileCommand}"/>
+        <KeyBinding Key="E" Modifiers="Ctrl" Command="{Binding ExtractMessagesCommand}"/>
+        <KeyBinding Key="S" Modifiers="Ctrl+Shift" Command="{Binding ExportResultsCommand}"/>
+    </Window.InputBindings>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <!--  TOOLBAR                                                   -->
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <ToolBarTray Grid.Row="0" IsLocked="True">
+            <ToolBar Band="1" BandIndex="1">
+                <Button Content="📂 Open File" Command="{Binding OpenFileCommand}" Padding="8,4"
+                        ToolTip="Open a chat export file (Ctrl+O)"/>
+                <Separator/>
+                <Button Content="📥 Load Profile" Command="{Binding LoadProfileCommand}" Padding="6,4"/>
+                <Button Content="📤 Save Profile" Command="{Binding SaveProfileCommand}" Padding="6,4"/>
+                <Separator/>
+                <TextBlock Text="File:" VerticalAlignment="Center" Margin="4,0"/>
+                <TextBlock Text="{Binding LoadedFileName}" VerticalAlignment="Center"
+                           FontWeight="SemiBold" Margin="2,0,8,0"/>
+                <TextBlock Text="{Binding FormatDisplayName}" VerticalAlignment="Center"
+                           Foreground="DarkGreen" FontWeight="Bold" Margin="0,0,8,0"/>
+                <Separator/>
+                <Button Content="⚡ Extract" Command="{Binding ExtractMessagesCommand}" Padding="8,4"
+                        FontWeight="Bold" ToolTip="Extract messages using current mappings (Ctrl+E)"/>
+                <Button Content="💾 Export" Command="{Binding ExportResultsCommand}" Padding="8,4"
+                        ToolTip="Export results to CSV/JSON/XML (Ctrl+Shift+S)"/>
+                <Separator/>
+                <Button Content="🧹 Clear All" Command="{Binding ClearAllMappingsCommand}" Padding="6,4"/>
+            </ToolBar>
+        </ToolBarTray>
+
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <!--  MAIN CONTENT                                              -->
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <Grid Grid.Row="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="3*" MinHeight="200"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="2*" MinHeight="120"/>
+            </Grid.RowDefinitions>
+
+            <!-- Top: Left tree + Right config -->
+            <Grid Grid.Row="0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="2*" MinWidth="250"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="3*" MinWidth="350"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- ═════════════════════════════════════════════════ -->
+                <!--  LEFT PANEL — File Structure Tree                -->
+                <!-- ═════════════════════════════════════════════════ -->
+                <DockPanel Grid.Column="0" Margin="4,4,0,4">
+                    <!-- Header with Start/End buttons -->
+                    <Border DockPanel.Dock="Top" Padding="6,4" Background="#FFEEEEEE">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="📁 File Structure" FontWeight="Bold" FontSize="13"
+                                       VerticalAlignment="Center"/>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                <Button Content="▶ Start" Padding="6,2" Margin="2,0"
+                                        Command="{Binding SetStartNodeCommand}"
+                                        ToolTip="Set selected node as the repeating element (array of messages)"/>
+                                <Button Content="■ End" Padding="6,2"
+                                        Command="{Binding SetEndNodeCommand}"
+                                        ToolTip="Set selected node as end boundary (optional)"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <!-- Start / End path display -->
+                    <Border DockPanel.Dock="Bottom" Padding="6,4" Background="#FFF5F5F5"
+                            BorderBrush="LightGray" BorderThickness="0,1,0,0">
+                        <StackPanel>
+                            <TextBlock FontFamily="Consolas" FontSize="11" Margin="0,0,0,2">
+                                <Run Text="Path: " Foreground="Gray"/>
+                                <Run Text="{Binding SelectedNodePath, Mode=OneWay}" FontWeight="SemiBold"/>
+                            </TextBlock>
+                            <StackPanel Orientation="Horizontal"
+                                        Visibility="{Binding StartNodePath, Converter={StaticResource StrToVis}}">
+                                <TextBlock FontSize="11" Foreground="Green" FontWeight="SemiBold">
+                                    <Run Text="▶ START: "/>
+                                    <Run Text="{Binding StartNodePath}" FontFamily="Consolas"/>
+                                </TextBlock>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal"
+                                        Visibility="{Binding EndNodePath, Converter={StaticResource StrToVis}}">
+                                <TextBlock FontSize="11" Foreground="Crimson" FontWeight="SemiBold">
+                                    <Run Text="■ END: "/>
+                                    <Run Text="{Binding EndNodePath}" FontFamily="Consolas"/>
+                                </TextBlock>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- TreeView -->
+                    <TreeView ItemsSource="{Binding TreeNodes}"
+                              BorderThickness="1" BorderBrush="LightGray"
+                              VirtualizingStackPanel.IsVirtualizing="True"
+                              VirtualizingStackPanel.VirtualizationMode="Recycling"
+                              Padding="2"
+                              x:Name="FileTree"
+                              PreviewMouseLeftButtonDown="FileTree_PreviewMouseLeftButtonDown"
+                              PreviewMouseMove="FileTree_PreviewMouseMove">
+                        <TreeView.ItemContainerStyle>
+                            <Style TargetType="TreeViewItem" BasedOn="{StaticResource TreeItemStyle}">
+                                <EventSetter Event="Selected" Handler="TreeViewItem_Selected"/>
+                            </Style>
+                        </TreeView.ItemContainerStyle>
+                        <TreeView.ItemTemplate>
+                            <HierarchicalDataTemplate DataType="{x:Type models:FileTreeNode}"
+                                                      ItemsSource="{Binding Children}">
+                                <StackPanel Orientation="Horizontal" Margin="0,1">
+                                    <!-- Start/End dot markers -->
+                                    <Ellipse Width="8" Height="8" Fill="Green" Margin="0,0,4,0"
+                                             Visibility="{Binding IsStartNode, Converter={StaticResource BoolToVis}}"/>
+                                    <Ellipse Width="8" Height="8" Fill="Crimson" Margin="0,0,4,0"
+                                             Visibility="{Binding IsEndNode, Converter={StaticResource BoolToVis}}"/>
+                                    <!-- Type icon -->
+                                    <TextBlock Text="{Binding NodeType, Converter={StaticResource NodeIcon}}"
+                                               Foreground="Gray" Width="24" FontFamily="Consolas"
+                                               VerticalAlignment="Center"/>
+                                    <!-- Display name -->
+                                    <TextBlock Text="{Binding DisplayName}"
+                                               Foreground="{Binding NodeType, Converter={StaticResource NodeFg}}"
+                                               FontFamily="Consolas" FontSize="12.5"
+                                               VerticalAlignment="Center"
+                                               ToolTip="{Binding Path}"/>
+                                </StackPanel>
+                            </HierarchicalDataTemplate>
+                        </TreeView.ItemTemplate>
+                    </TreeView>
+                </DockPanel>
+
+                <!-- Splitter -->
+                <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center"
+                              VerticalAlignment="Stretch" Cursor="SizeWE"/>
+
+                <!-- ═════════════════════════════════════════════════ -->
+                <!--  RIGHT PANEL — Field Mapping Configuration       -->
+                <!-- ═════════════════════════════════════════════════ -->
+                <DockPanel Grid.Column="2" Margin="0,4,4,4">
+
+                    <!-- Header -->
+                    <Border DockPanel.Dock="Top" Padding="6,4" Background="#FFEEEEEE">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock VerticalAlignment="Center" FontSize="13">
+                                <Run Text="⚙ Field Mapping" FontWeight="Bold"/>
+                                <Run Text="  ("/>
+                                <Run Text="{Binding MappedFieldCount}" FontWeight="Bold" Foreground="DarkGreen"/>
+                                <Run Text=" mapped)"/>
+                            </TextBlock>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                <Button Content="🔗 Assign Node" Padding="6,2" Margin="2,0"
+                                        Command="{Binding AssignToFieldCommand}"
+                                        ToolTip="Assign the selected tree node to the selected field"/>
+                                <Button Content="✕ Clear" Padding="6,2"
+                                        Command="{Binding ClearMappingCommand}"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <!-- Profile name -->
+                    <Border DockPanel.Dock="Bottom" Padding="6,3" Background="#FFF5F5F5"
+                            BorderBrush="LightGray" BorderThickness="0,1,0,0">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Profile:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBox Text="{Binding ProfileName, UpdateSourceTrigger=PropertyChanged}"
+                                     Width="200" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Split: Field list + Detail -->
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" MinWidth="200"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*" MinWidth="200"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Field list -->
+                        <ListBox Grid.Column="0" ItemsSource="{Binding FieldMappings}"
+                                 SelectedItem="{Binding SelectedMapping}"
+                                 BorderThickness="1" BorderBrush="LightGray"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 AllowDrop="True"
+                                 DragOver="FieldList_DragOver"
+                                 Drop="FieldList_Drop"
+                                 x:Name="FieldList">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="2,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="12"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <!-- Mapped indicator dot -->
+                                        <Ellipse Grid.Column="0" Width="8" Height="8"
+                                                 Fill="{Binding IsMapped, Converter={StaticResource MappedColor}}"
+                                                 VerticalAlignment="Center"/>
+
+                                        <!-- Field name + mapped path -->
+                                        <StackPanel Grid.Column="1" Margin="6,0,0,0">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="{Binding TargetField}" FontSize="12.5" FontWeight="SemiBold"/>
+                                                <TextBlock Text=" *" Foreground="Red" FontSize="10"
+                                                           x:Name="star" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                            <TextBlock Text="{Binding SourcePath}"
+                                                       FontFamily="Consolas" FontSize="10.5"
+                                                       Foreground="Gray" TextTrimming="CharacterEllipsis"
+                                                       MaxWidth="220"
+                                                       Visibility="{Binding IsMapped, Converter={StaticResource BoolToVis}}"/>
+                                        </StackPanel>
+
+                                        <!-- Preview value -->
+                                        <TextBlock Grid.Column="2" Text="{Binding PreviewValue}"
+                                                   FontFamily="Consolas" FontSize="10"
+                                                   Foreground="SteelBlue" MaxWidth="120"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   VerticalAlignment="Center" Margin="4,0"
+                                                   Visibility="{Binding IsMapped, Converter={StaticResource BoolToVis}}"/>
+                                    </Grid>
+                                    <DataTemplate.Triggers>
+                                        <DataTrigger Binding="{Binding IsRequired}" Value="False">
+                                            <Setter TargetName="star" Property="Visibility" Value="Collapsed"/>
+                                        </DataTrigger>
+                                    </DataTemplate.Triggers>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Center" Cursor="SizeWE"/>
+
+                        <!-- Selected field detail panel -->
+                        <Border Grid.Column="2" BorderThickness="1" BorderBrush="LightGray"
+                                Background="White" Padding="10">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Visibility="{Binding SelectedMapping, Converter={StaticResource BoolToVis}}">
+
+                                    <!-- Field title -->
+                                    <TextBlock FontSize="16" FontWeight="Bold" Margin="0,0,0,2">
+                                        <Run Text="{Binding SelectedMapping.TargetField}"/>
+                                    </TextBlock>
+                                    <TextBlock Text="{Binding SelectedMapping.Description}"
+                                               Foreground="Gray" FontSize="12" Margin="0,0,0,12"/>
+
+                                    <!-- Source Path -->
+                                    <TextBlock Text="Source Path (from tree node)" FontWeight="SemiBold"
+                                               FontSize="11.5" Margin="0,0,0,3"/>
+                                    <TextBox Text="{Binding SelectedMapping.SourcePath, UpdateSourceTrigger=PropertyChanged}"
+                                             FontFamily="Consolas" FontSize="12" Padding="4"
+                                             Margin="0,0,0,12"/>
+
+                                    <!-- Default Value -->
+                                    <TextBlock Text="Default Value (if source is empty)" FontWeight="SemiBold"
+                                               FontSize="11.5" Margin="0,0,0,3"/>
+                                    <TextBox Text="{Binding SelectedMapping.DefaultValue, UpdateSourceTrigger=PropertyChanged}"
+                                             FontFamily="Consolas" FontSize="12" Padding="4"
+                                             Margin="0,0,0,16"/>
+
+                                    <!-- Preview -->
+                                    <Border Background="#FFF5F8FF" BorderBrush="#FFCCE0FF" BorderThickness="1"
+                                            CornerRadius="3" Padding="8" Margin="0,0,0,12">
+                                        <StackPanel>
+                                            <TextBlock Text="Preview Value" FontWeight="SemiBold"
+                                                       FontSize="11" Foreground="SteelBlue" Margin="0,0,0,4"/>
+                                            <TextBlock Text="{Binding SelectedMapping.PreviewValue}"
+                                                       FontFamily="Consolas" FontSize="12"
+                                                       TextWrapping="Wrap" Foreground="DarkSlateGray"/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- Sample values from selected tree node -->
+                                    <Border Background="#FFF5FFF5" BorderBrush="#FFCCE0CC" BorderThickness="1"
+                                            CornerRadius="3" Padding="8"
+                                            Visibility="{Binding SelectedNodeSamples, Converter={StaticResource StrToVis}}">
+                                        <StackPanel>
+                                            <TextBlock Text="Sample Values (from tree)" FontWeight="SemiBold"
+                                                       FontSize="11" Foreground="DarkGreen" Margin="0,0,0,4"/>
+                                            <TextBlock Text="{Binding SelectedNodeSamples}"
+                                                       FontFamily="Consolas" FontSize="11"
+                                                       TextWrapping="Wrap" Foreground="DarkSlateGray"/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- Quick info -->
+                                    <TextBlock Margin="0,12,0,0" FontSize="11" Foreground="Gray" TextWrapping="Wrap">
+                                        <Run FontWeight="SemiBold">Tip:</Run>
+                                        <Run Text=" Select a tree node on the left, then click "/>
+                                        <Run Text="🔗 Assign Node" FontWeight="SemiBold"/>
+                                        <Run Text=" above — or drag a node from the tree and drop it on a field."/>
+                                    </TextBlock>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Border>
+                    </Grid>
+                </DockPanel>
+            </Grid>
+
+            <!-- Row Splitter -->
+            <GridSplitter Grid.Row="1" Height="5" HorizontalAlignment="Stretch" Cursor="SizeNS"/>
+
+            <!-- ═════════════════════════════════════════════════════ -->
+            <!--  BOTTOM PANEL — Extracted Data Preview               -->
+            <!-- ═════════════════════════════════════════════════════ -->
+            <DockPanel Grid.Row="2" Margin="4,0,4,4">
+                <Border DockPanel.Dock="Top" Padding="6,4" Background="#FFEEEEEE">
+                    <TextBlock FontSize="13">
+                        <Run Text="📊 Extracted Messages" FontWeight="Bold"/>
+                        <Run Text="  ("/>
+                        <Run Text="{Binding ExtractedMessageCount}" FontWeight="Bold" Foreground="DarkGreen"/>
+                        <Run Text=" rows)"/>
+                    </TextBlock>
+                </Border>
+
+                <DataGrid ItemsSource="{Binding ExtractedMessages}"
+                          AutoGenerateColumns="False"
+                          IsReadOnly="True"
+                          CanUserAddRows="False"
+                          CanUserDeleteRows="False"
+                          SelectionMode="Single"
+                          HeadersVisibility="Column"
+                          AlternatingRowBackground="#FFF5F8FF"
+                          GridLinesVisibility="Horizontal"
+                          HorizontalGridLinesBrush="LightGray"
+                          FontFamily="Consolas" FontSize="11.5"
+                          BorderThickness="1" BorderBrush="LightGray">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="MessageId" Binding="{Binding MessageId}" Width="100"/>
+                        <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp}" Width="150"/>
+                        <DataGridTextColumn Header="SenderName" Binding="{Binding SenderName}" Width="120"/>
+                        <DataGridTextColumn Header="SenderId" Binding="{Binding SenderId}" Width="100"/>
+                        <DataGridTextColumn Header="RecipientName" Binding="{Binding RecipientName}" Width="120"/>
+                        <DataGridTextColumn Header="RecipientId" Binding="{Binding RecipientId}" Width="100"/>
+                        <DataGridTextColumn Header="MessageBody" Binding="{Binding MessageBody}" Width="280">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Header="MessageType" Binding="{Binding MessageType}" Width="80"/>
+                        <DataGridTextColumn Header="ChannelName" Binding="{Binding ChannelName}" Width="110"/>
+                        <DataGridTextColumn Header="ChannelId" Binding="{Binding ChannelId}" Width="90"/>
+                        <DataGridTextColumn Header="ThreadId" Binding="{Binding ThreadId}" Width="90"/>
+                        <DataGridTextColumn Header="ParentMsgId" Binding="{Binding ParentMessageId}" Width="90"/>
+                        <DataGridTextColumn Header="Attach?" Binding="{Binding HasAttachment}" Width="60"/>
+                        <DataGridTextColumn Header="AttachmentNames" Binding="{Binding AttachmentNames}" Width="140"/>
+                        <DataGridTextColumn Header="Platform" Binding="{Binding SourcePlatform}" Width="90"/>
+                        <DataGridTextColumn Header="SourceFile" Binding="{Binding SourceFile}" Width="120"/>
+                        <DataGridTextColumn Header="Edited" Binding="{Binding IsEdited}" Width="55"/>
+                        <DataGridTextColumn Header="Deleted" Binding="{Binding IsDeleted}" Width="55"/>
+                        <DataGridTextColumn Header="Extended" Binding="{Binding ExtendedProperties}" Width="180"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </DockPanel>
+        </Grid>
+
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <!--  STATUS BAR                                                -->
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <StatusBar Grid.Row="2">
+            <StatusBarItem>
+                <TextBlock Text="{Binding StatusMessage}"/>
+            </StatusBarItem>
+            <StatusBarItem HorizontalAlignment="Right">
+                <TextBlock Text="Ctrl+O Open  |  Ctrl+E Extract  |  Ctrl+Shift+S Export"
+                           Foreground="Gray" FontSize="11"/>
+            </StatusBarItem>
+        </StatusBar>
+
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <!--  DROP OVERLAY (shown when no file is loaded)               -->
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <Border Grid.RowSpan="3" Background="#E0FFFFFF"
+                Visibility="{Binding IsFileLoaded, Converter={StaticResource InvBoolToVis}}"
+                x:Name="DropOverlay">
+            <Border Background="White" CornerRadius="12"
+                    BorderBrush="#FFB0C4DE" BorderThickness="2"
+                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                    Padding="60,40" MaxWidth="520">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="20" Opacity="0.15" ShadowDepth="4"/>
+                </Border.Effect>
+                <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="Chat Export Mapper" FontSize="22" FontWeight="Bold"
+                               HorizontalAlignment="Center" Margin="0,0,0,8"/>
+                    <TextBlock Text="Drag &amp; drop a chat export file here"
+                               Foreground="Gray" FontSize="14"
+                               HorizontalAlignment="Center" Margin="0,0,0,6"/>
+                    <TextBlock Text="or" Foreground="LightGray" FontSize="12"
+                               HorizontalAlignment="Center" Margin="0,0,0,6"/>
+                    <Button Content="📂  Open File" Padding="20,8"
+                            Command="{Binding OpenFileCommand}"
+                            HorizontalAlignment="Center" FontSize="13" Margin="0,0,0,16"/>
+                    <TextBlock Text="Supports:  JSON  •  XML  •  CSV  •  TSV  •  HTML  •  TXT"
+                               Foreground="Gray" FontSize="11.5"
+                               HorizontalAlignment="Center"/>
+                </StackPanel>
+            </Border>
+        </Border>
+    </Grid>
+</Window>

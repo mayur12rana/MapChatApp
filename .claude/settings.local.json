@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet restore)",
+      "Bash(dotnet nuget list source)",
+      "Bash(dotnet nuget enable source \"nuget.org\")",
+      "Bash(dotnet build)"
+    ]
+  }
+}
