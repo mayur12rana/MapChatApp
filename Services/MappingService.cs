@@ -8,27 +8,478 @@ namespace ChatMapperApp.Services;
 /// <summary>
 /// Extracts data by directly finding nodes/elements via path.
 /// No regex — the source path points directly to the value.
+/// Also provides auto-discovery of source fields for two-level hierarchy.
 /// </summary>
 public static class MappingService
 {
+    // ═══════════════════════════════════════════════════════════════════
+    //  MAIN ENTRY — routes to format-specific extractor
+    // ═══════════════════════════════════════════════════════════════════
+
     public static List<ChatMessage> ExtractMessages(
         string rawContent,
         FileFormat format,
-        string startNodePath,
-        string endNodePath,
+        string parentNodePath,
+        string childNodePath,
+        HierarchyMode mode,
         IReadOnlyList<FieldMapping> mappings)
+    {
+        if (mode == HierarchyMode.TwoLevel && !string.IsNullOrWhiteSpace(childNodePath))
+        {
+            return format switch
+            {
+                FileFormat.Xml or FileFormat.Html => ExtractTwoLevelXml(rawContent, parentNodePath, childNodePath, mappings),
+                FileFormat.Json => ExtractTwoLevelJson(rawContent, parentNodePath, childNodePath, mappings),
+                _ => ExtractFlat(rawContent, format, parentNodePath, mappings),
+            };
+        }
+
+        return ExtractFlat(rawContent, format, parentNodePath, mappings);
+    }
+
+    /// <summary>Flat (single-level) extraction — original behavior.</summary>
+    private static List<ChatMessage> ExtractFlat(
+        string rawContent, FileFormat format, string startPath, IReadOnlyList<FieldMapping> mappings)
     {
         return format switch
         {
-            FileFormat.Json => ExtractFromJson(rawContent, startNodePath, mappings),
-            FileFormat.Xml or FileFormat.Html => ExtractFromXml(rawContent, startNodePath, mappings),
+            FileFormat.Json => ExtractFromJson(rawContent, startPath, mappings),
+            FileFormat.Xml or FileFormat.Html => ExtractFromXml(rawContent, startPath, mappings),
             FileFormat.Csv or FileFormat.Tsv => ExtractFromCsv(rawContent, mappings, format == FileFormat.Tsv),
             _ => new List<ChatMessage>(),
         };
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    //  JSON — navigate by path, directly read value
+    //  AUTO-DISCOVERY — discover available source fields
+    // ═══════════════════════════════════════════════════════════════════
+
+    public static List<SourceNode> DiscoverSourceNodes(
+        string rawContent, FileFormat format, string parentPath, string childPath)
+    {
+        return format switch
+        {
+            FileFormat.Xml or FileFormat.Html => DiscoverXmlSourceNodes(rawContent, parentPath, childPath),
+            FileFormat.Json => DiscoverJsonSourceNodes(rawContent, parentPath, childPath),
+            _ => new List<SourceNode>(),
+        };
+    }
+
+    public static (int parentCount, int avgChildCount) CountItems(
+        string rawContent, FileFormat format, string parentPath, string childPath)
+    {
+        try
+        {
+            return format switch
+            {
+                FileFormat.Xml or FileFormat.Html => CountXmlItems(rawContent, parentPath, childPath),
+                FileFormat.Json => CountJsonItems(rawContent, parentPath, childPath),
+                _ => (0, 0),
+            };
+        }
+        catch { return (0, 0); }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  XML DISCOVERY
+    // ═══════════════════════════════════════════════════════════════════
+
+    private static List<SourceNode> DiscoverXmlSourceNodes(
+        string content, string parentPath, string childPath)
+    {
+        var nodes = new List<SourceNode>();
+        var doc = XDocument.Parse(content);
+
+        var parentElements = ResolveXmlElements(doc, parentPath);
+        if (parentElements == null) return nodes;
+
+        var firstParent = parentElements.FirstOrDefault();
+        if (firstParent == null) return nodes;
+
+        // Extract child node name from childPath
+        var childNodeName = childPath.Trim('/').Split('/').Last().Split('[')[0];
+
+        // Discover parent-level fields
+        DiscoverXmlFields(firstParent, childNodeName, SourceLevel.Parent, "", nodes);
+
+        // Discover child-level fields
+        var firstChild = firstParent.Elements()
+            .FirstOrDefault(e => e.Name.LocalName.Equals(childNodeName, StringComparison.OrdinalIgnoreCase));
+        if (firstChild != null)
+        {
+            DiscoverXmlFields(firstChild, null, SourceLevel.Child, "", nodes);
+        }
+
+        return nodes;
+    }
+
+    private static void DiscoverXmlFields(
+        XElement element, string? excludeChildName, SourceLevel level, string pathPrefix, List<SourceNode> nodes)
+    {
+        // Attributes
+        foreach (var attr in element.Attributes())
+        {
+            var name = string.IsNullOrEmpty(pathPrefix) ? $"@{attr.Name.LocalName}" : $"{pathPrefix}/@{attr.Name.LocalName}";
+            nodes.Add(new SourceNode
+            {
+                Name = name,
+                Path = name,
+                SampleValue = Truncate(attr.Value, 80),
+                Level = level,
+                NodeType = NodeType.Attribute,
+                GroupName = pathPrefix,
+            });
+        }
+
+        var groups = element.Elements().GroupBy(e => e.Name.LocalName).ToList();
+
+        foreach (var group in groups)
+        {
+            var elName = group.Key;
+
+            // Skip the child loop node at the parent level
+            if (excludeChildName != null && elName.Equals(excludeChildName, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var first = group.First();
+
+            if (first.HasElements)
+            {
+                // Nested element with children — recurse with path prefix
+                var nestedPrefix = string.IsNullOrEmpty(pathPrefix) ? elName : $"{pathPrefix}/{elName}";
+                var repeatCount = group.Count();
+
+                // Discover nested fields from first instance
+                DiscoverXmlFields(first, null, level, nestedPrefix, nodes);
+
+                // Tag repeat count on discovered nodes in this group
+                if (repeatCount > 1)
+                {
+                    foreach (var n in nodes.Where(n => n.GroupName == nestedPrefix))
+                        n.RepeatCount = repeatCount;
+                }
+            }
+            else
+            {
+                // Leaf element
+                var name = string.IsNullOrEmpty(pathPrefix) ? elName : $"{pathPrefix}/{elName}";
+                var val = first.Value.Trim();
+                nodes.Add(new SourceNode
+                {
+                    Name = name,
+                    Path = name,
+                    SampleValue = Truncate(val, 80),
+                    Level = level,
+                    NodeType = NodeType.Value,
+                    GroupName = pathPrefix,
+                    RepeatCount = group.Count() > 1 ? group.Count() : 0,
+                });
+            }
+        }
+    }
+
+    private static (int, int) CountXmlItems(string content, string parentPath, string childPath)
+    {
+        var doc = XDocument.Parse(content);
+        var parents = ResolveXmlElements(doc, parentPath)?.ToList();
+        if (parents == null || parents.Count == 0) return (0, 0);
+
+        var childNodeName = childPath.Trim('/').Split('/').Last().Split('[')[0];
+        var sampleCount = Math.Min(parents.Count, 10);
+        var totalChildren = 0;
+        for (int i = 0; i < sampleCount; i++)
+        {
+            totalChildren += parents[i].Elements()
+                .Count(e => e.Name.LocalName.Equals(childNodeName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        return (parents.Count, sampleCount > 0 ? totalChildren / sampleCount : 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  JSON DISCOVERY
+    // ═══════════════════════════════════════════════════════════════════
+
+    private static List<SourceNode> DiscoverJsonSourceNodes(
+        string content, string parentPath, string childPath)
+    {
+        var nodes = new List<SourceNode>();
+        var root = JToken.Parse(content);
+
+        var parentItems = ResolveJsonArray(root, parentPath);
+        if (parentItems == null) return nodes;
+
+        var firstParent = parentItems.FirstOrDefault();
+        if (firstParent is not JObject parentObj) return nodes;
+
+        // Extract child key from childPath relative to parent
+        var childKey = GetRelativeJsonKey(childPath, parentPath);
+        // If childPath looks like "$.conversations[0].messages", extract "messages"
+        if (string.IsNullOrEmpty(childKey))
+        {
+            var parts = childPath.TrimStart('$', '.').Split('.');
+            childKey = parts.Last().Split('[')[0];
+        }
+
+        // Discover parent-level fields
+        DiscoverJsonFields(parentObj, childKey, SourceLevel.Parent, "", nodes);
+
+        // Discover child-level fields
+        var childToken = parentObj[childKey];
+        JObject? firstChild = null;
+        if (childToken is JArray childArr && childArr.Count > 0)
+            firstChild = childArr[0] as JObject;
+        else if (childToken is JObject co)
+            firstChild = co;
+
+        if (firstChild != null)
+        {
+            DiscoverJsonFields(firstChild, null, SourceLevel.Child, "", nodes);
+        }
+
+        return nodes;
+    }
+
+    private static void DiscoverJsonFields(
+        JObject obj, string? excludeChildKey, SourceLevel level, string pathPrefix, List<SourceNode> nodes)
+    {
+        foreach (var prop in obj.Properties())
+        {
+            if (excludeChildKey != null && prop.Name.Equals(excludeChildKey, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var name = string.IsNullOrEmpty(pathPrefix) ? prop.Name : $"{pathPrefix}/{prop.Name}";
+
+            if (prop.Value is JObject nested)
+            {
+                // Recurse into nested object
+                DiscoverJsonFields(nested, null, level, name, nodes);
+            }
+            else if (prop.Value is JArray arr)
+            {
+                // Array of primitives or objects
+                if (arr.Count > 0 && arr[0] is JObject arrObj)
+                {
+                    DiscoverJsonFields(arrObj, null, level, name, nodes);
+                    foreach (var n in nodes.Where(n => n.GroupName == name))
+                        n.RepeatCount = arr.Count;
+                }
+                else
+                {
+                    var val = arr.Count > 0 ? arr[0]?.ToString() ?? "" : "";
+                    nodes.Add(new SourceNode
+                    {
+                        Name = name,
+                        Path = name,
+                        SampleValue = Truncate(val, 80),
+                        Level = level,
+                        NodeType = NodeType.Array,
+                        GroupName = pathPrefix,
+                        RepeatCount = arr.Count,
+                    });
+                }
+            }
+            else
+            {
+                var val = prop.Value?.ToString() ?? "";
+                nodes.Add(new SourceNode
+                {
+                    Name = name,
+                    Path = name,
+                    SampleValue = Truncate(val, 80),
+                    Level = level,
+                    NodeType = prop.Value?.Type == JTokenType.Boolean ? NodeType.Value :
+                               prop.Value?.Type == JTokenType.Integer || prop.Value?.Type == JTokenType.Float ? NodeType.Value :
+                               NodeType.Value,
+                    GroupName = pathPrefix,
+                });
+            }
+        }
+    }
+
+    private static (int, int) CountJsonItems(string content, string parentPath, string childPath)
+    {
+        var root = JToken.Parse(content);
+        var parents = ResolveJsonArray(root, parentPath)?.ToList();
+        if (parents == null || parents.Count == 0) return (0, 0);
+
+        var childKey = GetRelativeJsonKey(childPath, parentPath);
+        if (string.IsNullOrEmpty(childKey))
+        {
+            var parts = childPath.TrimStart('$', '.').Split('.');
+            childKey = parts.Last().Split('[')[0];
+        }
+
+        var sampleCount = Math.Min(parents.Count, 10);
+        var totalChildren = 0;
+        for (int i = 0; i < sampleCount; i++)
+        {
+            if (parents[i] is JObject obj && obj[childKey] is JArray arr)
+                totalChildren += arr.Count;
+        }
+
+        return (parents.Count, sampleCount > 0 ? totalChildren / sampleCount : 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  TWO-LEVEL EXTRACTION — XML
+    // ═══════════════════════════════════════════════════════════════════
+
+    private static List<ChatMessage> ExtractTwoLevelXml(
+        string content, string parentPath, string childPath, IReadOnlyList<FieldMapping> mappings)
+    {
+        var messages = new List<ChatMessage>();
+        var doc = XDocument.Parse(content);
+
+        var parentElements = ResolveXmlElements(doc, parentPath);
+        if (parentElements == null) return messages;
+
+        var childNodeName = childPath.Trim('/').Split('/').Last().Split('[')[0];
+
+        var parentMappings = mappings
+            .Where(m => m.IsEnabled && m.IsMapped && m.SourceLevel == SourceLevel.Parent)
+            .ToList();
+        var childMappings = mappings
+            .Where(m => m.IsEnabled && m.IsMapped && m.SourceLevel == SourceLevel.Child)
+            .ToList();
+        var defaultMappings = mappings
+            .Where(m => m.IsEnabled && m.IsMapped && m.SourceLevel == SourceLevel.None)
+            .ToList();
+
+        foreach (var parentEl in parentElements)
+        {
+            // Read parent-level values once
+            var parentValues = new Dictionary<string, string>();
+            foreach (var pm in parentMappings)
+            {
+                var value = ReadXmlValue(parentEl, pm.SourcePath);
+                if (string.IsNullOrEmpty(value) && !string.IsNullOrEmpty(pm.DefaultValue))
+                    value = pm.DefaultValue;
+                if (value != null)
+                    parentValues[pm.TargetField] = value;
+            }
+
+            // Find child elements
+            var childElements = parentEl.Elements()
+                .Where(e => e.Name.LocalName.Equals(childNodeName, StringComparison.OrdinalIgnoreCase));
+
+            foreach (var childEl in childElements)
+            {
+                var msg = new ChatMessage();
+
+                // Apply parent values (cascade)
+                foreach (var kv in parentValues)
+                    SetField(msg, kv.Key, kv.Value);
+
+                // Apply child values
+                foreach (var cm in childMappings)
+                {
+                    var value = ReadXmlValue(childEl, cm.SourcePath);
+                    if (string.IsNullOrEmpty(value) && !string.IsNullOrEmpty(cm.DefaultValue))
+                        value = cm.DefaultValue;
+                    SetField(msg, cm.TargetField, value);
+                }
+
+                // Apply default-level mappings (neither parent nor child)
+                foreach (var dm in defaultMappings)
+                {
+                    if (!string.IsNullOrEmpty(dm.DefaultValue))
+                        SetField(msg, dm.TargetField, dm.DefaultValue);
+                }
+
+                if (!IsEmpty(msg)) messages.Add(msg);
+            }
+        }
+
+        return messages;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  TWO-LEVEL EXTRACTION — JSON
+    // ═══════════════════════════════════════════════════════════════════
+
+    private static List<ChatMessage> ExtractTwoLevelJson(
+        string content, string parentPath, string childPath, IReadOnlyList<FieldMapping> mappings)
+    {
+        var messages = new List<ChatMessage>();
+        var root = JToken.Parse(content);
+
+        var parentItems = ResolveJsonArray(root, parentPath);
+        if (parentItems == null) return messages;
+
+        var childKey = GetRelativeJsonKey(childPath, parentPath);
+        if (string.IsNullOrEmpty(childKey))
+        {
+            var parts = childPath.TrimStart('$', '.').Split('.');
+            childKey = parts.Last().Split('[')[0];
+        }
+
+        var parentMappings = mappings
+            .Where(m => m.IsEnabled && m.IsMapped && m.SourceLevel == SourceLevel.Parent)
+            .ToList();
+        var childMappings = mappings
+            .Where(m => m.IsEnabled && m.IsMapped && m.SourceLevel == SourceLevel.Child)
+            .ToList();
+        var defaultMappings = mappings
+            .Where(m => m.IsEnabled && m.IsMapped && m.SourceLevel == SourceLevel.None)
+            .ToList();
+
+        foreach (var parentItem in parentItems)
+        {
+            if (parentItem is not JObject parentObj) continue;
+
+            // Read parent-level values once
+            var parentValues = new Dictionary<string, string>();
+            foreach (var pm in parentMappings)
+            {
+                var value = ReadJsonValue(parentObj, pm.SourcePath);
+                if (string.IsNullOrEmpty(value) && !string.IsNullOrEmpty(pm.DefaultValue))
+                    value = pm.DefaultValue;
+                if (value != null)
+                    parentValues[pm.TargetField] = value;
+            }
+
+            // Find child array
+            var childToken = parentObj[childKey];
+            IEnumerable<JToken>? childItems = null;
+            if (childToken is JArray arr) childItems = arr;
+            else if (childToken != null) childItems = new[] { childToken };
+
+            if (childItems == null) continue;
+
+            foreach (var childItem in childItems)
+            {
+                var msg = new ChatMessage();
+
+                // Apply parent values (cascade)
+                foreach (var kv in parentValues)
+                    SetField(msg, kv.Key, kv.Value);
+
+                // Apply child values
+                foreach (var cm in childMappings)
+                {
+                    var value = ReadJsonValue(childItem, cm.SourcePath);
+                    if (string.IsNullOrEmpty(value) && !string.IsNullOrEmpty(cm.DefaultValue))
+                        value = cm.DefaultValue;
+                    SetField(msg, cm.TargetField, value);
+                }
+
+                // Apply default-level mappings
+                foreach (var dm in defaultMappings)
+                {
+                    if (!string.IsNullOrEmpty(dm.DefaultValue))
+                        SetField(msg, dm.TargetField, dm.DefaultValue);
+                }
+
+                if (!IsEmpty(msg)) messages.Add(msg);
+            }
+        }
+
+        return messages;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  FLAT JSON — navigate by path, directly read value
     // ═══════════════════════════════════════════════════════════════════
 
     private static List<ChatMessage> ExtractFromJson(
@@ -37,13 +488,9 @@ public static class MappingService
         var messages = new List<ChatMessage>();
         var root = JToken.Parse(content);
 
-        // Resolve the array of repeating items
         var items = ResolveJsonArray(root, startPath);
         if (items == null) return messages;
 
-        // For each item, figure out the relative field paths
-        // startPath e.g. "$.messages" → items are at $.messages[0], $.messages[1], ...
-        // mapping source e.g. "$.messages[0].text" → relative key = "text"
         var activeMappings = mappings
             .Where(m => m.IsEnabled && m.IsMapped && !string.IsNullOrWhiteSpace(m.SourcePath))
             .ToList();
@@ -74,12 +521,10 @@ public static class MappingService
     {
         if (string.IsNullOrWhiteSpace(path) || path == "$")
         {
-            // Root is the array itself
             if (root is JArray arr) return arr;
             return null;
         }
 
-        // Navigate down: "$.messages" → root["messages"]
         var clean = path.TrimStart('$', '.');
         JToken? current = root;
 
@@ -116,10 +561,6 @@ public static class MappingService
         return null;
     }
 
-    /// <summary>
-    /// Given a full source path like "$.messages[0].user_profile.real_name"
-    /// and a start path like "$.messages", extract the relative key: "user_profile.real_name"
-    /// </summary>
     private static string GetRelativeJsonKey(string sourcePath, string startPath)
     {
         var src = sourcePath.TrimStart('$', '.');
@@ -128,7 +569,6 @@ public static class MappingService
         if (src.StartsWith(start, StringComparison.OrdinalIgnoreCase))
         {
             var relative = src[start.Length..];
-            // Strip leading [0]. or [0] or .
             relative = Regex.Replace(relative, @"^\[\d+\]\.?", "");
             relative = relative.TrimStart('.');
             return relative;
@@ -137,17 +577,17 @@ public static class MappingService
         return src;
     }
 
-    /// <summary>
-    /// Read a value from a JToken by navigating a dotted relative path.
-    /// Handles nested objects like "user_profile.real_name".
-    /// </summary>
     private static string? ReadJsonValue(JToken item, string relativePath)
     {
         if (string.IsNullOrWhiteSpace(relativePath))
             return item.Type == JTokenType.Object ? null : item.ToString();
 
         JToken? current = item;
-        foreach (var part in SplitPath(relativePath))
+
+        // Support slash-based paths (from discovery) by converting to dot-based
+        var normalizedPath = relativePath.Replace('/', '.');
+
+        foreach (var part in SplitPath(normalizedPath))
         {
             if (current == null) return null;
 
@@ -182,7 +622,7 @@ public static class MappingService
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    //  XML — navigate by path, directly read element text / attribute
+    //  FLAT XML — navigate by path, directly read element text / attribute
     // ═══════════════════════════════════════════════════════════════════
 
     private static List<ChatMessage> ExtractFromXml(
@@ -227,10 +667,8 @@ public static class MappingService
         var parts = path.Trim('/').Split('/');
         XElement? current = doc.Root;
 
-        // Skip the root element name if it matches the first part
         int startIdx = parts[0].Equals(doc.Root.Name.LocalName, StringComparison.OrdinalIgnoreCase) ? 1 : 0;
 
-        // Navigate to the parent of the repeating element
         for (int i = startIdx; i < parts.Length - 1; i++)
         {
             if (current == null) return null;
@@ -251,7 +689,6 @@ public static class MappingService
         if (sourcePath.StartsWith(startPath, StringComparison.OrdinalIgnoreCase))
         {
             var rel = sourcePath[startPath.Length..].TrimStart('/');
-            // Strip index like [0]/
             rel = Regex.Replace(rel, @"^\[\d+\]/", "");
             rel = Regex.Replace(rel, @"^\[\d+\]$", "");
             return rel;
@@ -268,6 +705,7 @@ public static class MappingService
         if (relativePath.StartsWith("@"))
             return element.Attribute(relativePath[1..])?.Value;
 
+        // Support slash-based paths from discovery
         var parts = relativePath.Split('/');
         XElement? current = element;
 
@@ -315,16 +753,13 @@ public static class MappingService
                     .Replace("$.columns.", "")
                     .Replace("$.rows[*].", "")
                     .Trim();
-                // Remove index if present e.g. "$.columns[2]" → find by index
                 var idxMatch = Regex.Match(mapping.SourcePath, @"\[(\d+)\]");
 
                 string? value = null;
-                // Try by column name
                 var colIdx = Array.FindIndex(headers, h =>
                     h.Equals(colName, StringComparison.OrdinalIgnoreCase));
                 if (colIdx >= 0 && colIdx < cols.Length)
                     value = cols[colIdx];
-                // Try by index
                 else if (idxMatch.Success)
                 {
                     var idx = int.Parse(idxMatch.Groups[1].Value);
@@ -378,6 +813,9 @@ public static class MappingService
         string.IsNullOrWhiteSpace(msg.MessageBody) &&
         string.IsNullOrWhiteSpace(msg.SenderName) &&
         string.IsNullOrWhiteSpace(msg.Timestamp);
+
+    private static string Truncate(string value, int maxLen)
+        => value.Length > maxLen ? value[..maxLen] + "…" : value;
 
     private static string[] SplitPath(string path)
     {

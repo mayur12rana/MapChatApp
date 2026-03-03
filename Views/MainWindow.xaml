@@ -22,8 +22,11 @@
         <conv:NodeTypeIconConverter x:Key="NodeIcon"/>
         <conv:NodeTypeForegroundConverter x:Key="NodeFg"/>
         <conv:StringNotEmptyToVisibilityConverter x:Key="StrToVis"/>
+        <conv:InverseBoolConverter x:Key="InvBool"/>
+        <conv:SourceLevelColorConverter x:Key="LevelColor"/>
+        <conv:SourceLevelIndicatorConverter x:Key="LevelIcon"/>
 
-        <!-- TreeViewItem style with visual Start/End markers -->
+        <!-- TreeViewItem style -->
         <Style x:Key="TreeItemStyle" TargetType="TreeViewItem">
             <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
             <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}"/>
@@ -37,6 +40,8 @@
         <KeyBinding Key="O" Modifiers="Ctrl" Command="{Binding OpenFileCommand}"/>
         <KeyBinding Key="E" Modifiers="Ctrl" Command="{Binding ExtractMessagesCommand}"/>
         <KeyBinding Key="S" Modifiers="Ctrl+Shift" Command="{Binding ExportResultsCommand}"/>
+        <KeyBinding Key="P" Modifiers="Ctrl" Command="{Binding SetParentNodeCommand}"/>
+        <KeyBinding Key="M" Modifiers="Ctrl" Command="{Binding SetChildNodeCommand}"/>
     </Window.InputBindings>
 
     <Grid>
@@ -91,10 +96,10 @@
                 </Grid.ColumnDefinitions>
 
                 <!-- ═════════════════════════════════════════════════ -->
-                <!--  LEFT PANEL — File Structure Tree                -->
+                <!--  ZONE A — File Structure Tree (Left Panel)       -->
                 <!-- ═════════════════════════════════════════════════ -->
                 <DockPanel Grid.Column="0" Margin="4,4,0,4">
-                    <!-- Header with Start/End buttons -->
+                    <!-- Header with Parent/Child buttons -->
                     <Border DockPanel.Dock="Top" Padding="6,4" Background="#FFEEEEEE">
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -104,17 +109,17 @@
                             <TextBlock Text="📁 File Structure" FontWeight="Bold" FontSize="13"
                                        VerticalAlignment="Center"/>
                             <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                <Button Content="▶ Start" Padding="6,2" Margin="2,0"
-                                        Command="{Binding SetStartNodeCommand}"
-                                        ToolTip="Set selected node as the repeating element (array of messages)"/>
-                                <Button Content="■ End" Padding="6,2"
-                                        Command="{Binding SetEndNodeCommand}"
-                                        ToolTip="Set selected node as end boundary (optional)"/>
+                                <Button Content="▶ Set Parent" Padding="6,2" Margin="2,0"
+                                        Command="{Binding SetParentNodeCommand}"
+                                        ToolTip="Set selected node as the parent loop (Ctrl+P)"/>
+                                <Button Content="▶ Set Child" Padding="6,2"
+                                        Command="{Binding SetChildNodeCommand}"
+                                        ToolTip="Set selected node as the child/message loop (Ctrl+M)"/>
                             </StackPanel>
                         </Grid>
                     </Border>
 
-                    <!-- Start / End path display -->
+                    <!-- Parent / Child path display -->
                     <Border DockPanel.Dock="Bottom" Padding="6,4" Background="#FFF5F5F5"
                             BorderBrush="LightGray" BorderThickness="0,1,0,0">
                         <StackPanel>
@@ -123,17 +128,29 @@
                                 <Run Text="{Binding SelectedNodePath, Mode=OneWay}" FontWeight="SemiBold"/>
                             </TextBlock>
                             <StackPanel Orientation="Horizontal"
-                                        Visibility="{Binding StartNodePath, Converter={StaticResource StrToVis}}">
-                                <TextBlock FontSize="11" Foreground="Green" FontWeight="SemiBold">
-                                    <Run Text="▶ START: "/>
-                                    <Run Text="{Binding StartNodePath}" FontFamily="Consolas"/>
+                                        Visibility="{Binding ParentNodePath, Converter={StaticResource StrToVis}}">
+                                <TextBlock FontSize="11" Foreground="#228B22" FontWeight="SemiBold">
+                                    <Run Text="🟢 PARENT: "/>
+                                    <Run Text="{Binding ParentNodePath}" FontFamily="Consolas"/>
+                                </TextBlock>
+                                <TextBlock FontSize="11" Foreground="Gray" Margin="8,0,0,0"
+                                           Visibility="{Binding ParentItemCount, Converter={StaticResource BoolToVis}}">
+                                    <Run Text="("/>
+                                    <Run Text="{Binding ParentItemCount, Mode=OneWay}"/>
+                                    <Run Text=" items)"/>
                                 </TextBlock>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal"
-                                        Visibility="{Binding EndNodePath, Converter={StaticResource StrToVis}}">
-                                <TextBlock FontSize="11" Foreground="Crimson" FontWeight="SemiBold">
-                                    <Run Text="■ END: "/>
-                                    <Run Text="{Binding EndNodePath}" FontFamily="Consolas"/>
+                                        Visibility="{Binding ChildNodePath, Converter={StaticResource StrToVis}}">
+                                <TextBlock FontSize="11" Foreground="#0050A0" FontWeight="SemiBold">
+                                    <Run Text="🔵 CHILD: "/>
+                                    <Run Text="{Binding ChildNodePath}" FontFamily="Consolas"/>
+                                </TextBlock>
+                                <TextBlock FontSize="11" Foreground="Gray" Margin="8,0,0,0"
+                                           Visibility="{Binding ChildItemCountSample, Converter={StaticResource BoolToVis}}">
+                                    <Run Text="(~"/>
+                                    <Run Text="{Binding ChildItemCountSample, Mode=OneWay}"/>
+                                    <Run Text=" per parent)"/>
                                 </TextBlock>
                             </StackPanel>
                         </StackPanel>
@@ -157,11 +174,12 @@
                             <HierarchicalDataTemplate DataType="{x:Type models:FileTreeNode}"
                                                       ItemsSource="{Binding Children}">
                                 <StackPanel Orientation="Horizontal" Margin="0,1">
-                                    <!-- Start/End dot markers -->
-                                    <Ellipse Width="8" Height="8" Fill="Green" Margin="0,0,4,0"
-                                             Visibility="{Binding IsStartNode, Converter={StaticResource BoolToVis}}"/>
-                                    <Ellipse Width="8" Height="8" Fill="Crimson" Margin="0,0,4,0"
-                                             Visibility="{Binding IsEndNode, Converter={StaticResource BoolToVis}}"/>
+                                    <!-- Parent dot (green) -->
+                                    <Ellipse Width="8" Height="8" Fill="#228B22" Margin="0,0,4,0"
+                                             Visibility="{Binding IsParentNode, Converter={StaticResource BoolToVis}}"/>
+                                    <!-- Child dot (blue) -->
+                                    <Ellipse Width="8" Height="8" Fill="#0050A0" Margin="0,0,4,0"
+                                             Visibility="{Binding IsChildNode, Converter={StaticResource BoolToVis}}"/>
                                     <!-- Type icon -->
                                     <TextBlock Text="{Binding NodeType, Converter={StaticResource NodeIcon}}"
                                                Foreground="Gray" Width="24" FontFamily="Consolas"
@@ -183,11 +201,11 @@
                               VerticalAlignment="Stretch" Cursor="SizeWE"/>
 
                 <!-- ═════════════════════════════════════════════════ -->
-                <!--  RIGHT PANEL — Field Mapping Configuration       -->
+                <!--  ZONE B — Mapping Configuration (Right Panel)    -->
                 <!-- ═════════════════════════════════════════════════ -->
                 <DockPanel Grid.Column="2" Margin="0,4,4,4">
 
-                    <!-- Header -->
+                    <!-- B-Header -->
                     <Border DockPanel.Dock="Top" Padding="6,4" Background="#FFEEEEEE">
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -195,22 +213,22 @@
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock VerticalAlignment="Center" FontSize="13">
-                                <Run Text="⚙ Field Mapping" FontWeight="Bold"/>
+                                <Run Text="⚙ Mapping Configuration" FontWeight="Bold"/>
                                 <Run Text="  ("/>
                                 <Run Text="{Binding MappedFieldCount}" FontWeight="Bold" Foreground="DarkGreen"/>
                                 <Run Text=" mapped)"/>
                             </TextBlock>
                             <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                <Button Content="🔗 Assign Node" Padding="6,2" Margin="2,0"
-                                        Command="{Binding AssignToFieldCommand}"
-                                        ToolTip="Assign the selected tree node to the selected field"/>
+                                <Button Content="Map →" Padding="6,2" Margin="2,0"
+                                        Command="{Binding MapSourceToTargetCommand}"
+                                        ToolTip="Map selected source node to selected target field"/>
                                 <Button Content="✕ Clear" Padding="6,2"
                                         Command="{Binding ClearMappingCommand}"/>
                             </StackPanel>
                         </Grid>
                     </Border>
 
-                    <!-- Profile name -->
+                    <!-- B-Footer: Profile name -->
                     <Border DockPanel.Dock="Bottom" Padding="6,3" Background="#FFF5F5F5"
                             BorderBrush="LightGray" BorderThickness="0,1,0,0">
                         <StackPanel Orientation="Horizontal">
@@ -220,132 +238,289 @@
                         </StackPanel>
                     </Border>
 
-                    <!-- Split: Field list + Detail -->
+                    <!-- B Content: B1 strip + (B2 | B3) -->
                     <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" MinWidth="200"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*" MinWidth="200"/>
-                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
 
-                        <!-- Field list -->
-                        <ListBox Grid.Column="0" ItemsSource="{Binding FieldMappings}"
-                                 SelectedItem="{Binding SelectedMapping}"
-                                 BorderThickness="1" BorderBrush="LightGray"
-                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                 AllowDrop="True"
-                                 DragOver="FieldList_DragOver"
-                                 Drop="FieldList_Drop"
-                                 x:Name="FieldList">
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <Grid Margin="2,3">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="12"/>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
+                        <!-- ═══════════════════════════════════════ -->
+                        <!--  B1: Hierarchy Configuration Strip      -->
+                        <!-- ═══════════════════════════════════════ -->
+                        <Border Grid.Row="0" BorderBrush="LightGray" BorderThickness="1"
+                                Background="#FAFAFA" Padding="8,6" Margin="0,0,0,4"
+                                Visibility="{Binding ParentNodePath, Converter={StaticResource StrToVis}}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
 
-                                        <!-- Mapped indicator dot -->
-                                        <Ellipse Grid.Column="0" Width="8" Height="8"
-                                                 Fill="{Binding IsMapped, Converter={StaticResource MappedColor}}"
-                                                 VerticalAlignment="Center"/>
-
-                                        <!-- Field name + mapped path -->
-                                        <StackPanel Grid.Column="1" Margin="6,0,0,0">
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock Text="{Binding TargetField}" FontSize="12.5" FontWeight="SemiBold"/>
-                                                <TextBlock Text=" *" Foreground="Red" FontSize="10"
-                                                           x:Name="star" VerticalAlignment="Center"/>
-                                            </StackPanel>
-                                            <TextBlock Text="{Binding SourcePath}"
-                                                       FontFamily="Consolas" FontSize="10.5"
-                                                       Foreground="Gray" TextTrimming="CharacterEllipsis"
-                                                       MaxWidth="220"
-                                                       Visibility="{Binding IsMapped, Converter={StaticResource BoolToVis}}"/>
-                                        </StackPanel>
-
-                                        <!-- Preview value -->
-                                        <TextBlock Grid.Column="2" Text="{Binding PreviewValue}"
-                                                   FontFamily="Consolas" FontSize="10"
-                                                   Foreground="SteelBlue" MaxWidth="120"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   VerticalAlignment="Center" Margin="4,0"
-                                                   Visibility="{Binding IsMapped, Converter={StaticResource BoolToVis}}"/>
-                                    </Grid>
-                                    <DataTemplate.Triggers>
-                                        <DataTrigger Binding="{Binding IsRequired}" Value="False">
-                                            <Setter TargetName="star" Property="Visibility" Value="Collapsed"/>
-                                        </DataTrigger>
-                                    </DataTemplate.Triggers>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-
-                        <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Center" Cursor="SizeWE"/>
-
-                        <!-- Selected field detail panel -->
-                        <Border Grid.Column="2" BorderThickness="1" BorderBrush="LightGray"
-                                Background="White" Padding="10">
-                            <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                <StackPanel Visibility="{Binding SelectedMapping, Converter={StaticResource BoolToVis}}">
-
-                                    <!-- Field title -->
-                                    <TextBlock FontSize="16" FontWeight="Bold" Margin="0,0,0,2">
-                                        <Run Text="{Binding SelectedMapping.TargetField}"/>
+                                <StackPanel>
+                                    <!-- Parent info -->
+                                    <TextBlock FontSize="11.5" Margin="0,0,0,2">
+                                        <Run Text="🟢" FontSize="10"/>
+                                        <Run Text=" Parent: " FontWeight="SemiBold" Foreground="#228B22"/>
+                                        <Run Text="{Binding ParentNodePath, Mode=OneWay}" FontFamily="Consolas"/>
+                                        <Run Text="  (" Foreground="Gray"/>
+                                        <Run Text="{Binding ParentItemCount, Mode=OneWay}" FontWeight="SemiBold"/>
+                                        <Run Text=" items)" Foreground="Gray"/>
                                     </TextBlock>
-                                    <TextBlock Text="{Binding SelectedMapping.Description}"
-                                               Foreground="Gray" FontSize="12" Margin="0,0,0,12"/>
-
-                                    <!-- Source Path -->
-                                    <TextBlock Text="Source Path (from tree node)" FontWeight="SemiBold"
-                                               FontSize="11.5" Margin="0,0,0,3"/>
-                                    <TextBox Text="{Binding SelectedMapping.SourcePath, UpdateSourceTrigger=PropertyChanged}"
-                                             FontFamily="Consolas" FontSize="12" Padding="4"
-                                             Margin="0,0,0,12"/>
-
-                                    <!-- Default Value -->
-                                    <TextBlock Text="Default Value (if source is empty)" FontWeight="SemiBold"
-                                               FontSize="11.5" Margin="0,0,0,3"/>
-                                    <TextBox Text="{Binding SelectedMapping.DefaultValue, UpdateSourceTrigger=PropertyChanged}"
-                                             FontFamily="Consolas" FontSize="12" Padding="4"
-                                             Margin="0,0,0,16"/>
-
-                                    <!-- Preview -->
-                                    <Border Background="#FFF5F8FF" BorderBrush="#FFCCE0FF" BorderThickness="1"
-                                            CornerRadius="3" Padding="8" Margin="0,0,0,12">
-                                        <StackPanel>
-                                            <TextBlock Text="Preview Value" FontWeight="SemiBold"
-                                                       FontSize="11" Foreground="SteelBlue" Margin="0,0,0,4"/>
-                                            <TextBlock Text="{Binding SelectedMapping.PreviewValue}"
-                                                       FontFamily="Consolas" FontSize="12"
-                                                       TextWrapping="Wrap" Foreground="DarkSlateGray"/>
-                                        </StackPanel>
-                                    </Border>
-
-                                    <!-- Sample values from selected tree node -->
-                                    <Border Background="#FFF5FFF5" BorderBrush="#FFCCE0CC" BorderThickness="1"
-                                            CornerRadius="3" Padding="8"
-                                            Visibility="{Binding SelectedNodeSamples, Converter={StaticResource StrToVis}}">
-                                        <StackPanel>
-                                            <TextBlock Text="Sample Values (from tree)" FontWeight="SemiBold"
-                                                       FontSize="11" Foreground="DarkGreen" Margin="0,0,0,4"/>
-                                            <TextBlock Text="{Binding SelectedNodeSamples}"
-                                                       FontFamily="Consolas" FontSize="11"
-                                                       TextWrapping="Wrap" Foreground="DarkSlateGray"/>
-                                        </StackPanel>
-                                    </Border>
-
-                                    <!-- Quick info -->
-                                    <TextBlock Margin="0,12,0,0" FontSize="11" Foreground="Gray" TextWrapping="Wrap">
-                                        <Run FontWeight="SemiBold">Tip:</Run>
-                                        <Run Text=" Select a tree node on the left, then click "/>
-                                        <Run Text="🔗 Assign Node" FontWeight="SemiBold"/>
-                                        <Run Text=" above — or drag a node from the tree and drop it on a field."/>
+                                    <!-- Child info -->
+                                    <TextBlock FontSize="11.5"
+                                               Visibility="{Binding ChildNodePath, Converter={StaticResource StrToVis}}">
+                                        <Run Text="🔵" FontSize="10"/>
+                                        <Run Text=" Child:  " FontWeight="SemiBold" Foreground="#0050A0"/>
+                                        <Run Text="{Binding ChildNodePath, Mode=OneWay}" FontFamily="Consolas"/>
+                                        <Run Text="  (~" Foreground="Gray"/>
+                                        <Run Text="{Binding ChildItemCountSample, Mode=OneWay}" FontWeight="SemiBold"/>
+                                        <Run Text=" per parent)" Foreground="Gray"/>
                                     </TextBlock>
                                 </StackPanel>
-                            </ScrollViewer>
+
+                                <!-- Mode toggle + estimate -->
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
+                                        <RadioButton Content="Parent → Child" IsChecked="{Binding IsTwoLevelMode}"
+                                                     Margin="0,0,10,0" FontSize="11"/>
+                                        <RadioButton Content="Flat" FontSize="11"
+                                                     IsChecked="{Binding IsTwoLevelMode, Converter={StaticResource InvBool}}"/>
+                                    </StackPanel>
+                                    <TextBlock Text="{Binding ResultEstimate}" FontSize="11"
+                                               Foreground="Gray" FontWeight="SemiBold"
+                                               Visibility="{Binding ResultEstimate, Converter={StaticResource StrToVis}}"
+                                               HorizontalAlignment="Right"/>
+                                </StackPanel>
+                            </Grid>
                         </Border>
+
+                        <!-- ═══════════════════════════════════════ -->
+                        <!--  B2 + B3: Source Nodes | Target Fields  -->
+                        <!-- ═══════════════════════════════════════ -->
+                        <Grid Grid.Row="1">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" MinWidth="180"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*" MinWidth="200"/>
+                            </Grid.ColumnDefinitions>
+
+                            <!-- ═══════════════════════════════════ -->
+                            <!--  B2: Discovered Source Nodes        -->
+                            <!-- ═══════════════════════════════════ -->
+                            <DockPanel Grid.Column="0">
+                                <TextBlock DockPanel.Dock="Top" Text="Available Source Nodes"
+                                           FontWeight="SemiBold" FontSize="11.5" Margin="0,0,0,3"
+                                           Foreground="#555"/>
+
+                                <ListBox ItemsSource="{Binding DiscoveredSourceNodes}"
+                                         SelectedItem="{Binding SelectedSourceNode}"
+                                         BorderThickness="1" BorderBrush="LightGray"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                         x:Name="SourceNodeList"
+                                         AllowDrop="False"
+                                         PreviewMouseLeftButtonDown="SourceNodeList_PreviewMouseLeftButtonDown"
+                                         PreviewMouseMove="SourceNodeList_PreviewMouseMove">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="2,2">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="18"/>
+                                                    <ColumnDefinition Width="20"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+
+                                                <!-- Level indicator -->
+                                                <TextBlock Grid.Column="0"
+                                                           Text="{Binding Level, Converter={StaticResource LevelIcon}}"
+                                                           VerticalAlignment="Center" FontSize="10"/>
+
+                                                <!-- Node type icon -->
+                                                <TextBlock Grid.Column="1"
+                                                           Text="{Binding NodeType, Converter={StaticResource NodeIcon}}"
+                                                           Foreground="Gray" FontFamily="Consolas" FontSize="11"
+                                                           VerticalAlignment="Center"/>
+
+                                                <!-- Name -->
+                                                <TextBlock Grid.Column="2" Text="{Binding Name}"
+                                                           FontFamily="Consolas" FontSize="11.5"
+                                                           VerticalAlignment="Center"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           ToolTip="{Binding Path}"/>
+
+                                                <!-- Sample value -->
+                                                <TextBlock Grid.Column="3" Text="{Binding SampleValue}"
+                                                           FontFamily="Consolas" FontSize="10"
+                                                           Foreground="Gray" MaxWidth="120"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           VerticalAlignment="Center" Margin="6,0,0,0"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                    <ListBox.GroupStyle>
+                                        <GroupStyle>
+                                            <GroupStyle.HeaderTemplate>
+                                                <DataTemplate>
+                                                    <Border Background="#FFEEF5EE" Padding="4,2" Margin="0,2,0,0"
+                                                            BorderBrush="#DDDDDD" BorderThickness="0,0,0,1">
+                                                        <TextBlock FontWeight="SemiBold" FontSize="11">
+                                                            <Run Text="{Binding Name, Mode=OneWay}"/>
+                                                        </TextBlock>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </GroupStyle.HeaderTemplate>
+                                        </GroupStyle>
+                                    </ListBox.GroupStyle>
+                                </ListBox>
+                            </DockPanel>
+
+                            <!-- Splitter -->
+                            <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Center" Cursor="SizeWE"/>
+
+                            <!-- ═══════════════════════════════════ -->
+                            <!--  B3: Target Output Fields           -->
+                            <!-- ═══════════════════════════════════ -->
+                            <DockPanel Grid.Column="2">
+                                <TextBlock DockPanel.Dock="Top" Text="Target Output Fields"
+                                           FontWeight="SemiBold" FontSize="11.5" Margin="0,0,0,3"
+                                           Foreground="#555"/>
+
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="*"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+
+                                    <!-- Field list -->
+                                    <ListBox Grid.Row="0" ItemsSource="{Binding FieldMappings}"
+                                             SelectedItem="{Binding SelectedMapping}"
+                                             BorderThickness="1" BorderBrush="LightGray"
+                                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                             AllowDrop="True"
+                                             DragOver="FieldList_DragOver"
+                                             Drop="FieldList_Drop"
+                                             x:Name="FieldList">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="2,3">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="18"/>
+                                                        <ColumnDefinition Width="12"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <!-- Level indicator (green/blue/gray) -->
+                                                    <TextBlock Grid.Column="0"
+                                                               Text="{Binding SourceLevel, Converter={StaticResource LevelIcon}}"
+                                                               VerticalAlignment="Center" FontSize="10"/>
+
+                                                    <!-- Mapped indicator dot -->
+                                                    <Ellipse Grid.Column="1" Width="8" Height="8"
+                                                             Fill="{Binding IsMapped, Converter={StaticResource MappedColor}}"
+                                                             VerticalAlignment="Center"/>
+
+                                                    <!-- Field name + source info -->
+                                                    <StackPanel Grid.Column="2" Margin="6,0,0,0">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding TargetField}" FontSize="12" FontWeight="SemiBold"/>
+                                                            <TextBlock Text=" *" Foreground="Red" FontSize="10"
+                                                                       x:Name="star" VerticalAlignment="Center"/>
+                                                        </StackPanel>
+                                                        <TextBlock FontFamily="Consolas" FontSize="10.5"
+                                                                   Foreground="Gray" TextTrimming="CharacterEllipsis"
+                                                                   MaxWidth="220"
+                                                                   Visibility="{Binding IsMapped, Converter={StaticResource BoolToVis}}">
+                                                            <Run Text="◀ "/>
+                                                            <Run Text="{Binding SourcePath, Mode=OneWay}"/>
+                                                        </TextBlock>
+                                                    </StackPanel>
+
+                                                    <!-- Preview value -->
+                                                    <TextBlock Grid.Column="3" Text="{Binding PreviewValue}"
+                                                               FontFamily="Consolas" FontSize="10"
+                                                               Foreground="SteelBlue" MaxWidth="120"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               VerticalAlignment="Center" Margin="4,0"
+                                                               Visibility="{Binding IsMapped, Converter={StaticResource BoolToVis}}"/>
+                                                </Grid>
+                                                <DataTemplate.Triggers>
+                                                    <DataTrigger Binding="{Binding IsRequired}" Value="False">
+                                                        <Setter TargetName="star" Property="Visibility" Value="Collapsed"/>
+                                                    </DataTrigger>
+                                                </DataTemplate.Triggers>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+
+                                    <!-- Selected field detail panel -->
+                                    <Border Grid.Row="1" BorderThickness="1" BorderBrush="LightGray"
+                                            Background="White" Padding="8" Margin="0,4,0,0"
+                                            MaxHeight="200"
+                                            Visibility="{Binding SelectedMapping, Converter={StaticResource BoolToVis}}">
+                                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                            <StackPanel>
+                                                <!-- Field title + level -->
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                                    <TextBlock FontSize="14" FontWeight="Bold">
+                                                        <Run Text="{Binding SelectedMapping.TargetField}"/>
+                                                    </TextBlock>
+                                                    <TextBlock Margin="8,0,0,0" VerticalAlignment="Center"
+                                                               FontSize="11"
+                                                               Foreground="{Binding SelectedMapping.SourceLevel, Converter={StaticResource LevelColor}}"
+                                                               Visibility="{Binding SelectedMapping.IsMapped, Converter={StaticResource BoolToVis}}">
+                                                        <Run Text="{Binding SelectedMapping.SourceLevel, Converter={StaticResource LevelIcon}}"/>
+                                                        <Run Text="{Binding SelectedMapping.SourceLevel, Mode=OneWay}"/>
+                                                    </TextBlock>
+                                                </StackPanel>
+                                                <TextBlock Text="{Binding SelectedMapping.Description}"
+                                                           Foreground="Gray" FontSize="11" Margin="0,0,0,8"/>
+
+                                                <!-- Source Path -->
+                                                <TextBlock Text="Source Path" FontWeight="SemiBold"
+                                                           FontSize="11" Margin="0,0,0,2"/>
+                                                <TextBox Text="{Binding SelectedMapping.SourcePath, UpdateSourceTrigger=PropertyChanged}"
+                                                         FontFamily="Consolas" FontSize="11.5" Padding="3"
+                                                         Margin="0,0,0,8"/>
+
+                                                <!-- Default Value -->
+                                                <TextBlock Text="Default Value" FontWeight="SemiBold"
+                                                           FontSize="11" Margin="0,0,0,2"/>
+                                                <TextBox Text="{Binding SelectedMapping.DefaultValue, UpdateSourceTrigger=PropertyChanged}"
+                                                         FontFamily="Consolas" FontSize="11.5" Padding="3"
+                                                         Margin="0,0,0,8"/>
+
+                                                <!-- Preview -->
+                                                <Border Background="#FFF5F8FF" BorderBrush="#FFCCE0FF" BorderThickness="1"
+                                                        CornerRadius="3" Padding="6" Margin="0,0,0,6">
+                                                    <StackPanel>
+                                                        <TextBlock Text="Preview Value" FontWeight="SemiBold"
+                                                                   FontSize="10.5" Foreground="SteelBlue" Margin="0,0,0,2"/>
+                                                        <TextBlock Text="{Binding SelectedMapping.PreviewValue}"
+                                                                   FontFamily="Consolas" FontSize="11"
+                                                                   TextWrapping="Wrap" Foreground="DarkSlateGray"/>
+                                                    </StackPanel>
+                                                </Border>
+
+                                                <!-- Sample values -->
+                                                <Border Background="#FFF5FFF5" BorderBrush="#FFCCE0CC" BorderThickness="1"
+                                                        CornerRadius="3" Padding="6"
+                                                        Visibility="{Binding SelectedNodeSamples, Converter={StaticResource StrToVis}}">
+                                                    <StackPanel>
+                                                        <TextBlock Text="Sample Values" FontWeight="SemiBold"
+                                                                   FontSize="10.5" Foreground="DarkGreen" Margin="0,0,0,2"/>
+                                                        <TextBlock Text="{Binding SelectedNodeSamples}"
+                                                                   FontFamily="Consolas" FontSize="10.5"
+                                                                   TextWrapping="Wrap" Foreground="DarkSlateGray"/>
+                                                    </StackPanel>
+                                                </Border>
+                                            </StackPanel>
+                                        </ScrollViewer>
+                                    </Border>
+                                </Grid>
+                            </DockPanel>
+                        </Grid>
                     </Grid>
                 </DockPanel>
             </Grid>
@@ -354,7 +529,7 @@
             <GridSplitter Grid.Row="1" Height="5" HorizontalAlignment="Stretch" Cursor="SizeNS"/>
 
             <!-- ═════════════════════════════════════════════════════ -->
-            <!--  BOTTOM PANEL — Extracted Data Preview               -->
+            <!--  ZONE C — Extracted Data Preview                     -->
             <!-- ═════════════════════════════════════════════════════ -->
             <DockPanel Grid.Row="2" Margin="4,0,4,4">
                 <Border DockPanel.Dock="Top" Padding="6,4" Background="#FFEEEEEE">
@@ -362,7 +537,10 @@
                         <Run Text="📊 Extracted Messages" FontWeight="Bold"/>
                         <Run Text="  ("/>
                         <Run Text="{Binding ExtractedMessageCount}" FontWeight="Bold" Foreground="DarkGreen"/>
-                        <Run Text=" rows)"/>
+                        <Run Text=" rows"/>
+                        <Run Text="{Binding ParentConversationCount, StringFormat=' from {0} conversations', Mode=OneWay}"
+                             Foreground="Gray"/>
+                        <Run Text=")"/>
                     </TextBlock>
                 </Border>
 
@@ -417,7 +595,7 @@
                 <TextBlock Text="{Binding StatusMessage}"/>
             </StatusBarItem>
             <StatusBarItem HorizontalAlignment="Right">
-                <TextBlock Text="Ctrl+O Open  |  Ctrl+E Extract  |  Ctrl+Shift+S Export"
+                <TextBlock Text="Ctrl+O Open  |  Ctrl+E Extract  |  Ctrl+Shift+S Export  |  Ctrl+P Parent  |  Ctrl+M Child"
                            Foreground="Gray" FontSize="11"/>
             </StatusBarItem>
         </StatusBar>

@@ -89,3 +89,50 @@ public class StringNotEmptyToVisibilityConverter : IValueConverter
         => !string.IsNullOrWhiteSpace(value as string) ? Visibility.Visible : Visibility.Collapsed;
     public object ConvertBack(object value, Type t, object p, CultureInfo c) => throw new NotImplementedException();
 }
+
+/// <summary>Inverts a boolean value (for RadioButton binding).</summary>
+public class InverseBoolConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is bool b ? !b : false;
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is bool b ? !b : false;
+}
+
+/// <summary>Converts SourceLevel to a color brush: Parent→Green, Child→Blue, None→LightGray.</summary>
+public class SourceLevelColorConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        if (value is SourceLevel level)
+        {
+            return level switch
+            {
+                SourceLevel.Parent => new SolidColorBrush(Color.FromRgb(34, 139, 34)),  // #228B22 Green
+                SourceLevel.Child => new SolidColorBrush(Color.FromRgb(0, 80, 160)),    // #0050A0 Blue
+                _ => new SolidColorBrush(Color.FromRgb(180, 180, 180)),                  // LightGray
+            };
+        }
+        return new SolidColorBrush(Color.FromRgb(180, 180, 180));
+    }
+    public object ConvertBack(object value, Type t, object p, CultureInfo c) => throw new NotImplementedException();
+}
+
+/// <summary>Converts SourceLevel to indicator text: Parent→●🟢, Child→●🔵, None→○.</summary>
+public class SourceLevelIndicatorConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        if (value is SourceLevel level)
+        {
+            return level switch
+            {
+                SourceLevel.Parent => "🟢",
+                SourceLevel.Child => "🔵",
+                _ => "○",
+            };
+        }
+        return "○";
+    }
+    public object ConvertBack(object value, Type t, object p, CultureInfo c) => throw new NotImplementedException();
+}

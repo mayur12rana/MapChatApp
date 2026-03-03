@@ -16,6 +16,10 @@ public partial class MainWindow : Window
     private Point _dragStartPoint;
     private bool _isDragging;
 
+    // Drag state for source node → field drag-drop
+    private Point _sourceNodeDragStartPoint;
+    private bool _isSourceNodeDragging;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -31,9 +35,9 @@ public partial class MainWindow : Window
         {
             e.Effects = DragDropEffects.Copy;
         }
-        else if (e.Data.GetDataPresent(typeof(FileTreeNode)))
+        else if (e.Data.GetDataPresent(typeof(FileTreeNode)) || e.Data.GetDataPresent(typeof(SourceNode)))
         {
-            // This is a tree→field drag, let it pass through
+            // These are internal drags, let them pass through
             return;
         }
         else
@@ -122,9 +126,47 @@ public partial class MainWindow : Window
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    //  SOURCE NODE (B2) → FIELD (B3) DRAG-DROP
+    // ═══════════════════════════════════════════════════════════════════
+
+    private void SourceNodeList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _sourceNodeDragStartPoint = e.GetPosition(null);
+        _isSourceNodeDragging = false;
+    }
+
+    private void SourceNodeList_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed) return;
+
+        var diff = e.GetPosition(null) - _sourceNodeDragStartPoint;
+        if (Math.Abs(diff.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(diff.Y) < SystemParameters.MinimumVerticalDragDistance)
+            return;
+
+        if (_isSourceNodeDragging) return;
+
+        var hit = e.OriginalSource as DependencyObject;
+        while (hit != null && hit is not ListBoxItem)
+            hit = VisualTreeHelper.GetParent(hit);
+
+        if (hit is ListBoxItem lbi && lbi.DataContext is SourceNode sourceNode)
+        {
+            _isSourceNodeDragging = true;
+            var data = new DataObject(typeof(SourceNode), sourceNode);
+            DragDrop.DoDragDrop(SourceNodeList, data, DragDropEffects.Link);
+            _isSourceNodeDragging = false;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  FIELD LIST — DROP TARGET (accepts both TreeNode and SourceNode)
+    // ═══════════════════════════════════════════════════════════════════
+
     private void FieldList_DragOver(object sender, DragEventArgs e)
     {
-        if (e.Data.GetDataPresent(typeof(FileTreeNode)))
+        if (e.Data.GetDataPresent(typeof(FileTreeNode)) || e.Data.GetDataPresent(typeof(SourceNode)))
         {
             e.Effects = DragDropEffects.Link;
 
@@ -147,10 +189,6 @@ public partial class MainWindow : Window
 
     private void FieldList_Drop(object sender, DragEventArgs e)
     {
-        if (!e.Data.GetDataPresent(typeof(FileTreeNode))) return;
-
-        var node = (FileTreeNode)e.Data.GetData(typeof(FileTreeNode))!;
-
         // Find which field item was dropped onto
         var pos = e.GetPosition(FieldList);
         var hitResult = VisualTreeHelper.HitTest(FieldList, pos);
@@ -159,18 +197,42 @@ public partial class MainWindow : Window
         var container = FindAncestor<ListBoxItem>(hitResult.VisualHit);
         if (container?.DataContext is not FieldMapping mapping) return;
 
-        // Assign the node to the field
-        mapping.SourcePath = node.Path;
-        mapping.IsMapped = true;
+        if (e.Data.GetDataPresent(typeof(SourceNode)))
+        {
+            // Drop from B2 source node list
+            var sourceNode = (SourceNode)e.Data.GetData(typeof(SourceNode))!;
+            mapping.SourcePath = sourceNode.Path;
+            mapping.SourceLevel = sourceNode.Level;
+            mapping.IsMapped = true;
+            mapping.PreviewValue = sourceNode.SampleValue;
 
-        if (node.SampleValues.Count > 0)
-            mapping.PreviewValue = node.SampleValues[0];
-        else if (!string.IsNullOrEmpty(node.Value))
-            mapping.PreviewValue = node.Value;
+            VM.SelectedMapping = mapping;
+            VM.MappedFieldCount = VM.FieldMappings.Count(m => m.IsMapped);
+            VM.StatusMessage = $"Mapped:  {sourceNode.Name}  →  {mapping.TargetField}  ({sourceNode.Level})";
+        }
+        else if (e.Data.GetDataPresent(typeof(FileTreeNode)))
+        {
+            // Drop from tree
+            var node = (FileTreeNode)e.Data.GetData(typeof(FileTreeNode))!;
+            mapping.SourcePath = node.Path;
+            mapping.IsMapped = true;
 
-        VM.SelectedMapping = mapping;
-        VM.MappedFieldCount = VM.FieldMappings.Count(m => m.IsMapped);
-        VM.StatusMessage = $"Mapped:  {node.Name}  →  {mapping.TargetField}";
+            // Determine level from node context
+            if (!string.IsNullOrEmpty(VM.ChildNodePath) &&
+                node.Path.Contains(VM.ChildNodePath.Split('/').Last().Split('[')[0]))
+                mapping.SourceLevel = SourceLevel.Child;
+            else if (!string.IsNullOrEmpty(VM.ParentNodePath))
+                mapping.SourceLevel = SourceLevel.Parent;
+
+            if (node.SampleValues.Count > 0)
+                mapping.PreviewValue = node.SampleValues[0];
+            else if (!string.IsNullOrEmpty(node.Value))
+                mapping.PreviewValue = node.Value;
+
+            VM.SelectedMapping = mapping;
+            VM.MappedFieldCount = VM.FieldMappings.Count(m => m.IsMapped);
+            VM.StatusMessage = $"Mapped:  {node.Name}  →  {mapping.TargetField}";
+        }
 
         e.Handled = true;
     }

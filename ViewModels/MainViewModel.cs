@@ -33,19 +33,30 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _selectedNodeValue = string.Empty;
     [ObservableProperty] private string _selectedNodeSamples = string.Empty;
 
+    // Hierarchy (Parent/Child)
+    [ObservableProperty] private string _parentNodePath = string.Empty;
+    [ObservableProperty] private string _childNodePath = string.Empty;
+    [ObservableProperty] private HierarchyMode _hierarchyMode = HierarchyMode.TwoLevel;
+    [ObservableProperty] private bool _isTwoLevelMode = true;
+    [ObservableProperty] private int _parentItemCount;
+    [ObservableProperty] private int _childItemCountSample;
+    [ObservableProperty] private string _resultEstimate = string.Empty;
+
     // Mapping
-    [ObservableProperty] private string _startNodePath = string.Empty;
-    [ObservableProperty] private string _endNodePath = string.Empty;
     [ObservableProperty] private FieldMapping? _selectedMapping;
+    [ObservableProperty] private SourceNode? _selectedSourceNode;
+    [ObservableProperty] private string _sourceNodeFilter = string.Empty;
 
     // Results
     [ObservableProperty] private int _extractedMessageCount;
     [ObservableProperty] private int _mappedFieldCount;
     [ObservableProperty] private string _profileName = string.Empty;
+    [ObservableProperty] private int _parentConversationCount;
 
     public ObservableCollection<FileTreeNode> TreeNodes { get; } = new();
     public ObservableCollection<FieldMapping> FieldMappings { get; } = new();
     public ObservableCollection<ChatMessage> ExtractedMessages { get; } = new();
+    public ObservableCollection<SourceNode> DiscoveredSourceNodes { get; } = new();
 
     // ═══════════════════════════════════════════════════════════════════
     //  CONSTRUCTOR
@@ -95,6 +106,15 @@ public partial class MainViewModel : ObservableObject
     }
 
     // ═══════════════════════════════════════════════════════════════════
+    //  HIERARCHY MODE TOGGLE
+    // ═══════════════════════════════════════════════════════════════════
+
+    partial void OnIsTwoLevelModeChanged(bool value)
+    {
+        HierarchyMode = value ? HierarchyMode.TwoLevel : HierarchyMode.Flat;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
     //  OPEN / LOAD
     // ═══════════════════════════════════════════════════════════════════
 
@@ -141,50 +161,142 @@ public partial class MainViewModel : ObservableObject
         IsFileLoaded = true;
         WindowTitle = $"Chat Export Mapper — {LoadedFileName}";
 
-        // Reset all mappings
-        StartNodePath = string.Empty;
-        EndNodePath = string.Empty;
+        // Reset all mappings and hierarchy
+        ParentNodePath = string.Empty;
+        ChildNodePath = string.Empty;
+        ParentItemCount = 0;
+        ChildItemCountSample = 0;
+        ResultEstimate = string.Empty;
+        DiscoveredSourceNodes.Clear();
+
         foreach (var m in FieldMappings)
         {
             m.SourcePath = string.Empty;
             m.DefaultValue = string.Empty;
             m.IsMapped = false;
             m.PreviewValue = string.Empty;
+            m.SourceLevel = SourceLevel.None;
         }
         ExtractedMessages.Clear();
         ExtractedMessageCount = 0;
         MappedFieldCount = 0;
+        ParentConversationCount = 0;
 
         StatusMessage = $"Loaded {LoadedFileName} — {FormatDisplayName}, {RawContentLineCount:N0} lines";
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    //  START / END NODE
+    //  PARENT / CHILD NODE
     // ═══════════════════════════════════════════════════════════════════
 
     [RelayCommand]
-    private void SetStartNode()
+    private void SetParentNode()
     {
         if (SelectedNode == null) return;
-        ClearNodeFlags(TreeNodes, isStart: true);
-        SelectedNode.IsStartNode = true;
-        StartNodePath = SelectedNode.Path;
-        StatusMessage = $"Start node ▶ {StartNodePath}";
+        ClearNodeFlags(TreeNodes, isParent: true);
+        SelectedNode.IsParentNode = true;
+        ParentNodePath = SelectedNode.Path;
+        StatusMessage = $"Parent node 🟢 {ParentNodePath}";
+
+        TryAutoDiscover();
     }
 
     [RelayCommand]
-    private void SetEndNode()
+    private void SetChildNode()
     {
         if (SelectedNode == null) return;
-        ClearNodeFlags(TreeNodes, isStart: false);
-        SelectedNode.IsEndNode = true;
-        EndNodePath = SelectedNode.Path;
-        StatusMessage = $"End node ■ {EndNodePath}";
+
+        // Validate: child should be inside parent
+        if (!string.IsNullOrEmpty(ParentNodePath) &&
+            !SelectedNode.Path.StartsWith(ParentNodePath, StringComparison.OrdinalIgnoreCase) &&
+            !IsDescendantOfParent(SelectedNode))
+        {
+            MessageBox.Show("The child node should be inside the parent node.\nSelect a repeating element within the parent.",
+                "Invalid Selection", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        ClearNodeFlags(TreeNodes, isParent: false);
+        SelectedNode.IsChildNode = true;
+        ChildNodePath = SelectedNode.Path;
+        StatusMessage = $"Child node 🔵 {ChildNodePath}";
+
+        TryAutoDiscover();
+    }
+
+    private bool IsDescendantOfParent(FileTreeNode node)
+    {
+        var current = node.Parent;
+        while (current != null)
+        {
+            if (current.IsParentNode) return true;
+            current = current.Parent;
+        }
+        return false;
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    //  ASSIGN / CLEAR FIELD
+    //  AUTO-DISCOVERY
     // ═══════════════════════════════════════════════════════════════════
+
+    private void TryAutoDiscover()
+    {
+        if (string.IsNullOrWhiteSpace(ParentNodePath) || string.IsNullOrWhiteSpace(ChildNodePath))
+            return;
+        if (string.IsNullOrWhiteSpace(RawContent))
+            return;
+
+        try
+        {
+            StatusMessage = "Discovering source fields…";
+
+            // Discover available source nodes
+            var nodes = MappingService.DiscoverSourceNodes(
+                RawContent, DetectedFormat, ParentNodePath, ChildNodePath);
+
+            DiscoveredSourceNodes.Clear();
+            foreach (var node in nodes)
+                DiscoveredSourceNodes.Add(node);
+
+            // Count items for result estimate
+            var (parentCount, avgChild) = MappingService.CountItems(
+                RawContent, DetectedFormat, ParentNodePath, ChildNodePath);
+
+            ParentItemCount = parentCount;
+            ChildItemCountSample = avgChild;
+
+            if (parentCount > 0 && avgChild > 0)
+                ResultEstimate = $"~{parentCount * avgChild:N0}+ message rows";
+            else if (parentCount > 0)
+                ResultEstimate = $"{parentCount} parent items";
+            else
+                ResultEstimate = string.Empty;
+
+            StatusMessage = $"Discovered {nodes.Count} source fields — {nodes.Count(n => n.Level == SourceLevel.Parent)} parent, {nodes.Count(n => n.Level == SourceLevel.Child)} child";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Discovery error: {ex.Message}";
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  MAP SOURCE → TARGET
+    // ═══════════════════════════════════════════════════════════════════
+
+    [RelayCommand]
+    private void MapSourceToTarget()
+    {
+        if (SelectedSourceNode == null || SelectedMapping == null) return;
+
+        SelectedMapping.SourcePath = SelectedSourceNode.Path;
+        SelectedMapping.SourceLevel = SelectedSourceNode.Level;
+        SelectedMapping.IsMapped = true;
+        SelectedMapping.PreviewValue = SelectedSourceNode.SampleValue;
+
+        MappedFieldCount = FieldMappings.Count(m => m.IsMapped);
+        StatusMessage = $"Mapped:  {SelectedSourceNode.Name}  →  {SelectedMapping.TargetField}  ({SelectedSourceNode.Level})";
+    }
 
     [RelayCommand]
     private void AssignToField()
@@ -193,6 +305,12 @@ public partial class MainViewModel : ObservableObject
 
         SelectedMapping.SourcePath = SelectedNode.Path;
         SelectedMapping.IsMapped = true;
+
+        // Determine level based on whether the node is under parent or child
+        if (!string.IsNullOrEmpty(ChildNodePath) && SelectedNode.Path.Contains(ChildNodePath.Split('/').Last().Split('[')[0]))
+            SelectedMapping.SourceLevel = SourceLevel.Child;
+        else if (!string.IsNullOrEmpty(ParentNodePath))
+            SelectedMapping.SourceLevel = SourceLevel.Parent;
 
         if (SelectedNode.SampleValues.Count > 0)
             SelectedMapping.PreviewValue = SelectedNode.SampleValues[0];
@@ -211,6 +329,7 @@ public partial class MainViewModel : ObservableObject
         SelectedMapping.DefaultValue = string.Empty;
         SelectedMapping.IsMapped = false;
         SelectedMapping.PreviewValue = string.Empty;
+        SelectedMapping.SourceLevel = SourceLevel.None;
         MappedFieldCount = FieldMappings.Count(m => m.IsMapped);
         StatusMessage = $"Cleared mapping for {SelectedMapping.TargetField}";
     }
@@ -224,14 +343,20 @@ public partial class MainViewModel : ObservableObject
             m.DefaultValue = string.Empty;
             m.IsMapped = false;
             m.PreviewValue = string.Empty;
+            m.SourceLevel = SourceLevel.None;
         }
-        StartNodePath = string.Empty;
-        EndNodePath = string.Empty;
+        ParentNodePath = string.Empty;
+        ChildNodePath = string.Empty;
+        ParentItemCount = 0;
+        ChildItemCountSample = 0;
+        ResultEstimate = string.Empty;
+        DiscoveredSourceNodes.Clear();
         ClearNodeFlags(TreeNodes, true);
         ClearNodeFlags(TreeNodes, false);
         ExtractedMessages.Clear();
         ExtractedMessageCount = 0;
         MappedFieldCount = 0;
+        ParentConversationCount = 0;
         StatusMessage = "All mappings cleared.";
     }
 
@@ -259,7 +384,8 @@ public partial class MainViewModel : ObservableObject
         try
         {
             var messages = MappingService.ExtractMessages(
-                RawContent, DetectedFormat, StartNodePath, EndNodePath, FieldMappings.ToList());
+                RawContent, DetectedFormat, ParentNodePath, ChildNodePath,
+                HierarchyMode, FieldMappings.ToList());
 
             foreach (var msg in messages)
             {
@@ -270,7 +396,10 @@ public partial class MainViewModel : ObservableObject
             ExtractedMessages.Clear();
             foreach (var msg in messages) ExtractedMessages.Add(msg);
             ExtractedMessageCount = messages.Count;
-            StatusMessage = $"Extracted {messages.Count} messages from {LoadedFileName}";
+            ParentConversationCount = ParentItemCount;
+
+            var convInfo = ParentConversationCount > 0 ? $" from {ParentConversationCount} conversations" : "";
+            StatusMessage = $"Extracted {messages.Count} messages{convInfo} from {LoadedFileName}";
         }
         catch (Exception ex)
         {
@@ -337,14 +466,16 @@ public partial class MainViewModel : ObservableObject
         {
             Name = ProfileName,
             Format = DetectedFormat,
-            StartNodePath = StartNodePath,
-            EndNodePath = EndNodePath,
+            Mode = HierarchyMode,
+            ParentNodePath = ParentNodePath,
+            ChildNodePath = ChildNodePath,
             Mappings = FieldMappings.Select(m => new FieldMappingSerialized
             {
                 TargetField = m.TargetField,
                 SourcePath = m.SourcePath,
                 DefaultValue = m.DefaultValue,
                 IsEnabled = m.IsEnabled,
+                SourceLevel = m.SourceLevel,
             }).ToList(),
         };
 
@@ -375,8 +506,13 @@ public partial class MainViewModel : ObservableObject
             var profile = JsonConvert.DeserializeObject<MappingProfile>(File.ReadAllText(dlg.FileName));
             if (profile == null) return;
 
-            StartNodePath = profile.StartNodePath;
-            EndNodePath = profile.EndNodePath;
+            // Backward compat: migrate old field names
+            profile.MigrateOldFields();
+
+            ParentNodePath = profile.ParentNodePath;
+            ChildNodePath = profile.ChildNodePath;
+            HierarchyMode = profile.Mode;
+            IsTwoLevelMode = profile.Mode == HierarchyMode.TwoLevel;
             ProfileName = profile.Name;
 
             foreach (var saved in profile.Mappings)
@@ -387,10 +523,15 @@ public partial class MainViewModel : ObservableObject
                 target.SourcePath = saved.SourcePath;
                 target.DefaultValue = saved.DefaultValue;
                 target.IsEnabled = saved.IsEnabled;
+                target.SourceLevel = saved.SourceLevel;
                 target.IsMapped = !string.IsNullOrWhiteSpace(saved.SourcePath);
             }
 
             MappedFieldCount = FieldMappings.Count(m => m.IsMapped);
+
+            // Trigger auto-discovery if both paths are set
+            TryAutoDiscover();
+
             StatusMessage = $"Profile '{profile.Name}' loaded — {MappedFieldCount} mappings.";
         }
         catch (Exception ex)
@@ -436,13 +577,13 @@ public partial class MainViewModel : ObservableObject
     //  HELPERS
     // ═══════════════════════════════════════════════════════════════════
 
-    private void ClearNodeFlags(ObservableCollection<FileTreeNode> nodes, bool isStart)
+    private void ClearNodeFlags(ObservableCollection<FileTreeNode> nodes, bool isParent)
     {
         foreach (var node in nodes)
         {
-            if (isStart) node.IsStartNode = false;
-            else node.IsEndNode = false;
-            ClearNodeFlags(node.Children, isStart);
+            if (isParent) node.IsParentNode = false;
+            else node.IsChildNode = false;
+            ClearNodeFlags(node.Children, isParent);
         }
     }
 }
