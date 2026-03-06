@@ -112,9 +112,12 @@
                                 <Button Content="▶ Set Parent" Padding="6,2" Margin="2,0"
                                         Command="{Binding SetParentNodeCommand}"
                                         ToolTip="Set selected node as the parent loop (Ctrl+P)"/>
-                                <Button Content="▶ Set Child" Padding="6,2"
+                                <Button Content="▶ Toggle Child" Padding="6,2" Margin="2,0"
                                         Command="{Binding SetChildNodeCommand}"
-                                        ToolTip="Set selected node as the child/message loop (Ctrl+M)"/>
+                                        ToolTip="Add/remove selected node as a child loop (Ctrl+M). Multiple children supported."/>
+                                <Button Content="✕" Padding="4,2"
+                                        Command="{Binding RemoveChildNodeCommand}"
+                                        ToolTip="Remove selected node from child selection"/>
                             </StackPanel>
                         </Grid>
                     </Border>
@@ -141,10 +144,10 @@
                                 </TextBlock>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal"
-                                        Visibility="{Binding ChildNodePath, Converter={StaticResource StrToVis}}">
+                                        Visibility="{Binding ChildNodePathsDisplay, Converter={StaticResource StrToVis}}">
                                 <TextBlock FontSize="11" Foreground="#0050A0" FontWeight="SemiBold">
                                     <Run Text="🔵 CHILD: "/>
-                                    <Run Text="{Binding ChildNodePath}" FontFamily="Consolas"/>
+                                    <Run Text="{Binding ChildNodePathsDisplay}" FontFamily="Consolas"/>
                                 </TextBlock>
                                 <TextBlock FontSize="11" Foreground="Gray" Margin="8,0,0,0"
                                            Visibility="{Binding ChildItemCountSample, Converter={StaticResource BoolToVis}}">
@@ -269,10 +272,11 @@
                                     </TextBlock>
                                     <!-- Child info -->
                                     <TextBlock FontSize="11.5"
-                                               Visibility="{Binding ChildNodePath, Converter={StaticResource StrToVis}}">
+                                               Visibility="{Binding ChildNodePathsDisplay, Converter={StaticResource StrToVis}}"
+                                               TextWrapping="Wrap">
                                         <Run Text="🔵" FontSize="10"/>
                                         <Run Text=" Child:  " FontWeight="SemiBold" Foreground="#0050A0"/>
-                                        <Run Text="{Binding ChildNodePath, Mode=OneWay}" FontFamily="Consolas"/>
+                                        <Run Text="{Binding ChildNodePathsDisplay, Mode=OneWay}" FontFamily="Consolas"/>
                                         <Run Text="  (~" Foreground="Gray"/>
                                         <Run Text="{Binding ChildItemCountSample, Mode=OneWay}" FontWeight="SemiBold"/>
                                         <Run Text=" per parent)" Foreground="Gray"/>
@@ -342,12 +346,12 @@
                                                            Foreground="Gray" FontFamily="Consolas" FontSize="11"
                                                            VerticalAlignment="Center"/>
 
-                                                <!-- Name -->
+                                                <!-- Name (with full path for child nodes) -->
                                                 <TextBlock Grid.Column="2" Text="{Binding Name}"
                                                            FontFamily="Consolas" FontSize="11.5"
                                                            VerticalAlignment="Center"
                                                            TextTrimming="CharacterEllipsis"
-                                                           ToolTip="{Binding Path}"/>
+                                                           ToolTip="{Binding Name}"/>
 
                                                 <!-- Sample value -->
                                                 <TextBlock Grid.Column="3" Text="{Binding SampleValue}"
@@ -382,9 +386,23 @@
                             <!--  B3: Target Output Fields           -->
                             <!-- ═══════════════════════════════════ -->
                             <DockPanel Grid.Column="2">
-                                <TextBlock DockPanel.Dock="Top" Text="Target Output Fields"
-                                           FontWeight="SemiBold" FontSize="11.5" Margin="0,0,0,3"
-                                           Foreground="#555"/>
+                                <DockPanel DockPanel.Dock="Top" Margin="0,0,0,3">
+                                    <TextBlock Text="Target Output Fields"
+                                               FontWeight="SemiBold" FontSize="11.5"
+                                               Foreground="#555" VerticalAlignment="Center"/>
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                        <TextBox Text="{Binding NewTargetFieldName, UpdateSourceTrigger=PropertyChanged}"
+                                                 Width="110" FontSize="11" Padding="2,1" Margin="4,0,2,0"
+                                                 VerticalAlignment="Center"
+                                                 ToolTip="Enter custom field name"/>
+                                        <Button Content="+ Add" Padding="4,1" FontSize="10.5"
+                                                Command="{Binding AddTargetFieldCommand}"
+                                                ToolTip="Add a custom target output field"/>
+                                        <Button Content="- Del" Padding="4,1" Margin="2,0,0,0" FontSize="10.5"
+                                                Command="{Binding RemoveTargetFieldCommand}"
+                                                ToolTip="Remove selected custom field"/>
+                                    </StackPanel>
+                                </DockPanel>
 
                                 <Grid>
                                     <Grid.RowDefinitions>
@@ -555,7 +573,8 @@
                           GridLinesVisibility="Horizontal"
                           HorizontalGridLinesBrush="LightGray"
                           FontFamily="Consolas" FontSize="11.5"
-                          BorderThickness="1" BorderBrush="LightGray">
+                          BorderThickness="1" BorderBrush="LightGray"
+                          x:Name="MessagesGrid">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="MessageId" Binding="{Binding MessageId}" Width="100"/>
                         <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp}" Width="150"/>

@@ -20,16 +20,16 @@ public static class MappingService
         string rawContent,
         FileFormat format,
         string parentNodePath,
-        string childNodePath,
+        IReadOnlyList<string> childNodePaths,
         HierarchyMode mode,
         IReadOnlyList<FieldMapping> mappings)
     {
-        if (mode == HierarchyMode.TwoLevel && !string.IsNullOrWhiteSpace(childNodePath))
+        if (mode == HierarchyMode.TwoLevel && childNodePaths.Count > 0)
         {
             return format switch
             {
-                FileFormat.Xml or FileFormat.Html => ExtractTwoLevelXml(rawContent, parentNodePath, childNodePath, mappings),
-                FileFormat.Json => ExtractTwoLevelJson(rawContent, parentNodePath, childNodePath, mappings),
+                FileFormat.Xml or FileFormat.Html => ExtractTwoLevelXml(rawContent, parentNodePath, childNodePaths, mappings),
+                FileFormat.Json => ExtractTwoLevelJson(rawContent, parentNodePath, childNodePaths, mappings),
                 _ => ExtractFlat(rawContent, format, parentNodePath, mappings),
             };
         }
@@ -99,8 +99,15 @@ public static class MappingService
         // Extract child node name from childPath
         var childNodeName = childPath.Trim('/').Split('/').Last().Split('[')[0];
 
-        // Discover parent-level fields
-        DiscoverXmlFields(firstParent, childNodeName, SourceLevel.Parent, "", nodes);
+        // Collect ALL complex child element names (those with sub-elements) to exclude from parent-level discovery
+        var complexChildNames = firstParent.Elements()
+            .Where(e => e.HasElements || e.HasAttributes)
+            .Select(e => e.Name.LocalName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Discover parent-level fields, excluding all complex child elements
+        DiscoverXmlFields(firstParent, complexChildNames, SourceLevel.Parent, "", nodes);
 
         // Discover child-level fields
         var firstChild = firstParent.Elements()
@@ -114,7 +121,7 @@ public static class MappingService
     }
 
     private static void DiscoverXmlFields(
-        XElement element, string? excludeChildName, SourceLevel level, string pathPrefix, List<SourceNode> nodes)
+        XElement element, HashSet<string>? excludeChildNames, SourceLevel level, string pathPrefix, List<SourceNode> nodes)
     {
         // Attributes
         foreach (var attr in element.Attributes())
@@ -137,8 +144,8 @@ public static class MappingService
         {
             var elName = group.Key;
 
-            // Skip the child loop node at the parent level
-            if (excludeChildName != null && elName.Equals(excludeChildName, StringComparison.OrdinalIgnoreCase))
+            // Skip excluded child element names at the parent level
+            if (excludeChildNames != null && excludeChildNames.Contains(elName))
                 continue;
 
             var first = group.First();
@@ -152,10 +159,12 @@ public static class MappingService
                 // Discover nested fields from first instance
                 DiscoverXmlFields(first, null, level, nestedPrefix, nodes);
 
-                // Tag repeat count on discovered nodes in this group
+                // Tag repeat count on discovered nodes in this group and all descendants
                 if (repeatCount > 1)
                 {
-                    foreach (var n in nodes.Where(n => n.GroupName == nestedPrefix))
+                    foreach (var n in nodes.Where(n =>
+                        n.GroupName.Equals(nestedPrefix, StringComparison.OrdinalIgnoreCase) ||
+                        n.GroupName.StartsWith(nestedPrefix + "/", StringComparison.OrdinalIgnoreCase)))
                         n.RepeatCount = repeatCount;
                 }
             }
@@ -220,6 +229,8 @@ public static class MappingService
             var parts = childPath.TrimStart('$', '.').Split('.');
             childKey = parts.Last().Split('[')[0];
         }
+        // Strip trailing array index (e.g. "messages[0]" → "messages")
+        childKey = Regex.Replace(childKey, @"\[\d+\]$", "");
 
         // Discover parent-level fields
         DiscoverJsonFields(parentObj, childKey, SourceLevel.Parent, "", nodes);
@@ -309,6 +320,8 @@ public static class MappingService
             var parts = childPath.TrimStart('$', '.').Split('.');
             childKey = parts.Last().Split('[')[0];
         }
+        // Strip trailing array index (e.g. "messages[0]" → "messages")
+        childKey = Regex.Replace(childKey, @"\[\d+\]$", "");
 
         var sampleCount = Math.Min(parents.Count, 10);
         var totalChildren = 0;
@@ -326,7 +339,7 @@ public static class MappingService
     // ═══════════════════════════════════════════════════════════════════
 
     private static List<ChatMessage> ExtractTwoLevelXml(
-        string content, string parentPath, string childPath, IReadOnlyList<FieldMapping> mappings)
+        string content, string parentPath, IReadOnlyList<string> childPaths, IReadOnlyList<FieldMapping> mappings)
     {
         var messages = new List<ChatMessage>();
         var doc = XDocument.Parse(content);
@@ -334,7 +347,11 @@ public static class MappingService
         var parentElements = ResolveXmlElements(doc, parentPath);
         if (parentElements == null) return messages;
 
-        var childNodeName = childPath.Trim('/').Split('/').Last().Split('[')[0];
+        var childNodeNames = childPaths
+            .Select(cp => cp.Trim('/').Split('/').Last().Split('[')[0])
+            .Where(n => !string.IsNullOrEmpty(n))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
         var parentMappings = mappings
             .Where(m => m.IsEnabled && m.IsMapped && m.SourceLevel == SourceLevel.Parent)
@@ -359,20 +376,28 @@ public static class MappingService
                     parentValues[pm.TargetField] = value;
             }
 
-            // Find child elements
+            // Find child elements from ALL child node types
             var childElements = parentEl.Elements()
-                .Where(e => e.Name.LocalName.Equals(childNodeName, StringComparison.OrdinalIgnoreCase));
+                .Where(e => childNodeNames.Any(cn =>
+                    e.Name.LocalName.Equals(cn, StringComparison.OrdinalIgnoreCase)));
 
             foreach (var childEl in childElements)
             {
                 var msg = new ChatMessage();
+                var childElName = childEl.Name.LocalName;
 
                 // Apply parent values (cascade)
                 foreach (var kv in parentValues)
                     SetField(msg, kv.Key, kv.Value);
 
-                // Apply child values
-                foreach (var cm in childMappings)
+                // Filter child mappings: only apply those belonging to this child element type (or untagged)
+                var relevantChildMappings = childMappings
+                    .Where(cm => string.IsNullOrEmpty(cm.ChildNodeKey) ||
+                                 cm.ChildNodeKey.Equals(childElName, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                // Apply only relevant child values for this child type
+                foreach (var cm in relevantChildMappings)
                 {
                     var value = ReadXmlValue(childEl, cm.SourcePath);
                     if (string.IsNullOrEmpty(value) && !string.IsNullOrEmpty(cm.DefaultValue))
@@ -399,7 +424,7 @@ public static class MappingService
     // ═══════════════════════════════════════════════════════════════════
 
     private static List<ChatMessage> ExtractTwoLevelJson(
-        string content, string parentPath, string childPath, IReadOnlyList<FieldMapping> mappings)
+        string content, string parentPath, IReadOnlyList<string> childPaths, IReadOnlyList<FieldMapping> mappings)
     {
         var messages = new List<ChatMessage>();
         var root = JToken.Parse(content);
@@ -407,12 +432,19 @@ public static class MappingService
         var parentItems = ResolveJsonArray(root, parentPath);
         if (parentItems == null) return messages;
 
-        var childKey = GetRelativeJsonKey(childPath, parentPath);
-        if (string.IsNullOrEmpty(childKey))
+        // Resolve all child keys, strip trailing [index], and deduplicate
+        var childKeys = childPaths.Select(cp =>
         {
-            var parts = childPath.TrimStart('$', '.').Split('.');
-            childKey = parts.Last().Split('[')[0];
-        }
+            var key = GetRelativeJsonKey(cp, parentPath);
+            if (string.IsNullOrEmpty(key))
+            {
+                var parts = cp.TrimStart('$', '.').Split('.');
+                key = parts.Last().Split('[')[0];
+            }
+            // Strip trailing array index (e.g. "messages[0]" → "messages")
+            key = Regex.Replace(key, @"\[\d+\]$", "");
+            return key;
+        }).Where(k => !string.IsNullOrEmpty(k)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
         var parentMappings = mappings
             .Where(m => m.IsEnabled && m.IsMapped && m.SourceLevel == SourceLevel.Parent)
@@ -439,39 +471,48 @@ public static class MappingService
                     parentValues[pm.TargetField] = value;
             }
 
-            // Find child array
-            var childToken = parentObj[childKey];
-            IEnumerable<JToken>? childItems = null;
-            if (childToken is JArray arr) childItems = arr;
-            else if (childToken != null) childItems = new[] { childToken };
-
-            if (childItems == null) continue;
-
-            foreach (var childItem in childItems)
+            // Iterate over ALL child keys
+            foreach (var childKey in childKeys)
             {
-                var msg = new ChatMessage();
+                var childToken = parentObj[childKey];
+                IEnumerable<JToken>? childItems = null;
+                if (childToken is JArray arr) childItems = arr;
+                else if (childToken != null) childItems = new[] { childToken };
 
-                // Apply parent values (cascade)
-                foreach (var kv in parentValues)
-                    SetField(msg, kv.Key, kv.Value);
+                if (childItems == null) continue;
 
-                // Apply child values
-                foreach (var cm in childMappings)
+                // Filter child mappings: only apply those belonging to this child key (or untagged for backward compat)
+                var relevantChildMappings = childMappings
+                    .Where(cm => string.IsNullOrEmpty(cm.ChildNodeKey) ||
+                                 cm.ChildNodeKey.Equals(childKey, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                foreach (var childItem in childItems)
                 {
-                    var value = ReadJsonValue(childItem, cm.SourcePath);
-                    if (string.IsNullOrEmpty(value) && !string.IsNullOrEmpty(cm.DefaultValue))
-                        value = cm.DefaultValue;
-                    SetField(msg, cm.TargetField, value);
-                }
+                    var msg = new ChatMessage();
 
-                // Apply default-level mappings
-                foreach (var dm in defaultMappings)
-                {
-                    if (!string.IsNullOrEmpty(dm.DefaultValue))
-                        SetField(msg, dm.TargetField, dm.DefaultValue);
-                }
+                    // Apply parent values (cascade)
+                    foreach (var kv in parentValues)
+                        SetField(msg, kv.Key, kv.Value);
 
-                if (!IsEmpty(msg)) messages.Add(msg);
+                    // Apply only relevant child values for this child type
+                    foreach (var cm in relevantChildMappings)
+                    {
+                        var value = ReadJsonValue(childItem, cm.SourcePath);
+                        if (string.IsNullOrEmpty(value) && !string.IsNullOrEmpty(cm.DefaultValue))
+                            value = cm.DefaultValue;
+                        SetField(msg, cm.TargetField, value);
+                    }
+
+                    // Apply default-level mappings
+                    foreach (var dm in defaultMappings)
+                    {
+                        if (!string.IsNullOrEmpty(dm.DefaultValue))
+                            SetField(msg, dm.TargetField, dm.DefaultValue);
+                    }
+
+                    if (!IsEmpty(msg)) messages.Add(msg);
+                }
             }
         }
 
@@ -806,13 +847,18 @@ public static class MappingService
             case "IsEdited": msg.IsEdited = value.Equals("true", StringComparison.OrdinalIgnoreCase); break;
             case "IsDeleted": msg.IsDeleted = value.Equals("true", StringComparison.OrdinalIgnoreCase); break;
             case "ExtendedProperties": msg.ExtendedProperties = value; break;
+            default:
+                // Custom fields go into the dictionary
+                msg.CustomFields[fieldName] = value;
+                break;
         }
     }
 
     private static bool IsEmpty(ChatMessage msg) =>
         string.IsNullOrWhiteSpace(msg.MessageBody) &&
         string.IsNullOrWhiteSpace(msg.SenderName) &&
-        string.IsNullOrWhiteSpace(msg.Timestamp);
+        string.IsNullOrWhiteSpace(msg.Timestamp) &&
+        msg.CustomFields.Count == 0;
 
     private static string Truncate(string value, int maxLen)
         => value.Length > maxLen ? value[..maxLen] + "…" : value;

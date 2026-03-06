@@ -1,6 +1,8 @@
+using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using ChatMapperApp.Models;
@@ -20,9 +22,53 @@ public partial class MainWindow : Window
     private Point _sourceNodeDragStartPoint;
     private bool _isSourceNodeDragging;
 
+    // Track dynamically added custom columns so we can remove them on re-extract
+    private readonly List<DataGridColumn> _customColumns = new();
+
     public MainWindow()
     {
         InitializeComponent();
+        Loaded += (_, _) =>
+        {
+            VM.PropertyChanged += VM_PropertyChanged;
+        };
+    }
+
+    private void VM_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(MainViewModel.ExtractedMessageCount))
+            UpdateCustomColumns();
+    }
+
+    private void UpdateCustomColumns()
+    {
+        // Remove previously added custom columns
+        foreach (var col in _customColumns)
+            MessagesGrid.Columns.Remove(col);
+        _customColumns.Clear();
+
+        // Collect custom field names from both extracted messages and mapped custom FieldMappings
+        var customFieldNames = VM.ExtractedMessages
+            .SelectMany(m => m.CustomFields.Keys)
+            .Concat(VM.FieldMappings
+                .Where(m => m.IsCustom && m.IsMapped)
+                .Select(m => m.TargetField))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n)
+            .ToList();
+
+        // Add a column for each custom field
+        foreach (var fieldName in customFieldNames)
+        {
+            var col = new DataGridTextColumn
+            {
+                Header = fieldName,
+                Binding = new Binding($"CustomFields[{fieldName}]"),
+                Width = new DataGridLength(120),
+            };
+            MessagesGrid.Columns.Add(col);
+            _customColumns.Add(col);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -203,6 +249,7 @@ public partial class MainWindow : Window
             var sourceNode = (SourceNode)e.Data.GetData(typeof(SourceNode))!;
             mapping.SourcePath = sourceNode.Path;
             mapping.SourceLevel = sourceNode.Level;
+            mapping.ChildNodeKey = sourceNode.ChildKey;
             mapping.IsMapped = true;
             mapping.PreviewValue = sourceNode.SampleValue;
 
@@ -217,10 +264,14 @@ public partial class MainWindow : Window
             mapping.SourcePath = node.Path;
             mapping.IsMapped = true;
 
-            // Determine level from node context
-            if (!string.IsNullOrEmpty(VM.ChildNodePath) &&
-                node.Path.Contains(VM.ChildNodePath.Split('/').Last().Split('[')[0]))
+            // Determine level from node context (check all child paths)
+            var matchedChildPath = VM.ChildNodePaths.FirstOrDefault(cp =>
+                node.Path.Contains(cp.Split('/').Last().Split('[')[0]));
+            if (matchedChildPath != null)
+            {
                 mapping.SourceLevel = SourceLevel.Child;
+                mapping.ChildNodeKey = matchedChildPath.TrimStart('$', '.', '/').Split(new[] { '.', '/' }).Last().Split('[')[0];
+            }
             else if (!string.IsNullOrEmpty(VM.ParentNodePath))
                 mapping.SourceLevel = SourceLevel.Parent;
 

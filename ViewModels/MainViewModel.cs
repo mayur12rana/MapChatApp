@@ -41,6 +41,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private int _parentItemCount;
     [ObservableProperty] private int _childItemCountSample;
     [ObservableProperty] private string _resultEstimate = string.Empty;
+    [ObservableProperty] private string _childNodePathsDisplay = string.Empty;
 
     // Mapping
     [ObservableProperty] private FieldMapping? _selectedMapping;
@@ -57,6 +58,7 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<FieldMapping> FieldMappings { get; } = new();
     public ObservableCollection<ChatMessage> ExtractedMessages { get; } = new();
     public ObservableCollection<SourceNode> DiscoveredSourceNodes { get; } = new();
+    public ObservableCollection<string> ChildNodePaths { get; } = new();
 
     // ═══════════════════════════════════════════════════════════════════
     //  CONSTRUCTOR
@@ -164,6 +166,8 @@ public partial class MainViewModel : ObservableObject
         // Reset all mappings and hierarchy
         ParentNodePath = string.Empty;
         ChildNodePath = string.Empty;
+        ChildNodePaths.Clear();
+        ChildNodePathsDisplay = string.Empty;
         ParentItemCount = 0;
         ChildItemCountSample = 0;
         ResultEstimate = string.Empty;
@@ -176,6 +180,7 @@ public partial class MainViewModel : ObservableObject
             m.IsMapped = false;
             m.PreviewValue = string.Empty;
             m.SourceLevel = SourceLevel.None;
+            m.ChildNodeKey = string.Empty;
         }
         ExtractedMessages.Clear();
         ExtractedMessageCount = 0;
@@ -216,12 +221,46 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
-        ClearNodeFlags(TreeNodes, isParent: false);
-        SelectedNode.IsChildNode = true;
-        ChildNodePath = SelectedNode.Path;
-        StatusMessage = $"Child node 🔵 {ChildNodePath}";
+        // Toggle: if already a child node, remove it; otherwise add it
+        if (SelectedNode.IsChildNode)
+        {
+            SelectedNode.IsChildNode = false;
+            ChildNodePaths.Remove(SelectedNode.Path);
+        }
+        else
+        {
+            SelectedNode.IsChildNode = true;
+            if (!ChildNodePaths.Contains(SelectedNode.Path))
+                ChildNodePaths.Add(SelectedNode.Path);
+        }
 
+        UpdateChildPathDisplay();
         TryAutoDiscover();
+    }
+
+    [RelayCommand]
+    private void RemoveChildNode()
+    {
+        if (SelectedNode == null || !SelectedNode.IsChildNode) return;
+        SelectedNode.IsChildNode = false;
+        ChildNodePaths.Remove(SelectedNode.Path);
+        UpdateChildPathDisplay();
+        TryAutoDiscover();
+    }
+
+    private void UpdateChildPathDisplay()
+    {
+        // Keep ChildNodePath as the first child for backward compat
+        ChildNodePath = ChildNodePaths.Count > 0 ? ChildNodePaths[0] : string.Empty;
+        ChildNodePathsDisplay = ChildNodePaths.Count switch
+        {
+            0 => string.Empty,
+            1 => ChildNodePaths[0],
+            _ => string.Join("  |  ", ChildNodePaths)
+        };
+        StatusMessage = ChildNodePaths.Count > 0
+            ? $"Child nodes 🔵 {ChildNodePaths.Count} selected"
+            : "Child node cleared";
     }
 
     private bool IsDescendantOfParent(FileTreeNode node)
@@ -241,7 +280,7 @@ public partial class MainViewModel : ObservableObject
 
     private void TryAutoDiscover()
     {
-        if (string.IsNullOrWhiteSpace(ParentNodePath) || string.IsNullOrWhiteSpace(ChildNodePath))
+        if (string.IsNullOrWhiteSpace(ParentNodePath) || ChildNodePaths.Count == 0)
             return;
         if (string.IsNullOrWhiteSpace(RawContent))
             return;
@@ -250,29 +289,74 @@ public partial class MainViewModel : ObservableObject
         {
             StatusMessage = "Discovering source fields…";
 
-            // Discover available source nodes
-            var nodes = MappingService.DiscoverSourceNodes(
-                RawContent, DetectedFormat, ParentNodePath, ChildNodePath);
+            // Collect all child node names for filtering
+            var childNodeNames = ChildNodePaths
+                .Select(cp => cp.TrimStart('$', '.', '/').Split(new[] { '.', '/' }).Last().Split('[')[0])
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            // Discover available source nodes from all child paths
+            var allNodes = new List<SourceNode>();
+            foreach (var childPath in ChildNodePaths)
+            {
+                var nodes = MappingService.DiscoverSourceNodes(
+                    RawContent, DetectedFormat, ParentNodePath, childPath);
+                foreach (var node in nodes)
+                {
+                    // Avoid duplicate parent-level nodes
+                    if (node.Level == SourceLevel.Parent &&
+                        allNodes.Any(n => n.Level == SourceLevel.Parent && n.Path == node.Path))
+                        continue;
+                    // Skip parent-level nodes from repeating container elements
+                    // (e.g. Message×13, ParticipantEntered×2 — these are child-type siblings)
+                    if (node.Level == SourceLevel.Parent && node.RepeatCount > 0)
+                        continue;
+                    // Skip parent-level nodes that match a toggled child type name
+                    if (node.Level == SourceLevel.Parent && childNodeNames.Any(cn =>
+                        node.Path.Equals(cn, StringComparison.OrdinalIgnoreCase) ||
+                        node.Path.StartsWith(cn + "/", StringComparison.OrdinalIgnoreCase)))
+                        continue;
+                    // Tag child-level nodes with their child group and prefix display name
+                    if (node.Level == SourceLevel.Child)
+                    {
+                        var childName = childPath.TrimStart('$', '.', '/').Split(new[] { '.', '/' }).Last().Split('[')[0];
+                        node.ChildKey = childName;
+                        // Prefix the child node name to Name for display (Path stays relative for extraction)
+                        node.Name = $"{childName}/{node.Name}";
+                        if (ChildNodePaths.Count > 1)
+                            node.GroupName = childName;
+                    }
+                    allNodes.Add(node);
+                }
+            }
 
             DiscoveredSourceNodes.Clear();
-            foreach (var node in nodes)
+            foreach (var node in allNodes)
                 DiscoveredSourceNodes.Add(node);
 
-            // Count items for result estimate
-            var (parentCount, avgChild) = MappingService.CountItems(
-                RawContent, DetectedFormat, ParentNodePath, ChildNodePath);
+            // Count items for result estimate (sum across all child paths)
+            var totalChildCount = 0;
+            var parentCount = 0;
+            foreach (var childPath in ChildNodePaths)
+            {
+                var (pc, avgChild) = MappingService.CountItems(
+                    RawContent, DetectedFormat, ParentNodePath, childPath);
+                parentCount = pc; // same parent count
+                totalChildCount += avgChild;
+            }
 
             ParentItemCount = parentCount;
-            ChildItemCountSample = avgChild;
+            ChildItemCountSample = totalChildCount;
 
-            if (parentCount > 0 && avgChild > 0)
-                ResultEstimate = $"~{parentCount * avgChild:N0}+ message rows";
+            if (parentCount > 0 && totalChildCount > 0)
+                ResultEstimate = $"~{parentCount * totalChildCount:N0}+ message rows";
             else if (parentCount > 0)
                 ResultEstimate = $"{parentCount} parent items";
             else
                 ResultEstimate = string.Empty;
 
-            StatusMessage = $"Discovered {nodes.Count} source fields — {nodes.Count(n => n.Level == SourceLevel.Parent)} parent, {nodes.Count(n => n.Level == SourceLevel.Child)} child";
+            StatusMessage = $"Discovered {allNodes.Count} source fields — {allNodes.Count(n => n.Level == SourceLevel.Parent)} parent, {allNodes.Count(n => n.Level == SourceLevel.Child)} child ({ChildNodePaths.Count} child types)";
         }
         catch (Exception ex)
         {
@@ -291,6 +375,7 @@ public partial class MainViewModel : ObservableObject
 
         SelectedMapping.SourcePath = SelectedSourceNode.Path;
         SelectedMapping.SourceLevel = SelectedSourceNode.Level;
+        SelectedMapping.ChildNodeKey = SelectedSourceNode.ChildKey;
         SelectedMapping.IsMapped = true;
         SelectedMapping.PreviewValue = SelectedSourceNode.SampleValue;
 
@@ -306,9 +391,14 @@ public partial class MainViewModel : ObservableObject
         SelectedMapping.SourcePath = SelectedNode.Path;
         SelectedMapping.IsMapped = true;
 
-        // Determine level based on whether the node is under parent or child
-        if (!string.IsNullOrEmpty(ChildNodePath) && SelectedNode.Path.Contains(ChildNodePath.Split('/').Last().Split('[')[0]))
+        // Determine level based on whether the node is under any child path
+        var matchedChildPath = ChildNodePaths.FirstOrDefault(cp =>
+            SelectedNode.Path.Contains(cp.Split('/').Last().Split('[')[0]));
+        if (matchedChildPath != null)
+        {
             SelectedMapping.SourceLevel = SourceLevel.Child;
+            SelectedMapping.ChildNodeKey = matchedChildPath.TrimStart('$', '.', '/').Split(new[] { '.', '/' }).Last().Split('[')[0];
+        }
         else if (!string.IsNullOrEmpty(ParentNodePath))
             SelectedMapping.SourceLevel = SourceLevel.Parent;
 
@@ -330,6 +420,7 @@ public partial class MainViewModel : ObservableObject
         SelectedMapping.IsMapped = false;
         SelectedMapping.PreviewValue = string.Empty;
         SelectedMapping.SourceLevel = SourceLevel.None;
+        SelectedMapping.ChildNodeKey = string.Empty;
         MappedFieldCount = FieldMappings.Count(m => m.IsMapped);
         StatusMessage = $"Cleared mapping for {SelectedMapping.TargetField}";
     }
@@ -344,9 +435,12 @@ public partial class MainViewModel : ObservableObject
             m.IsMapped = false;
             m.PreviewValue = string.Empty;
             m.SourceLevel = SourceLevel.None;
+            m.ChildNodeKey = string.Empty;
         }
         ParentNodePath = string.Empty;
         ChildNodePath = string.Empty;
+        ChildNodePaths.Clear();
+        ChildNodePathsDisplay = string.Empty;
         ParentItemCount = 0;
         ChildItemCountSample = 0;
         ResultEstimate = string.Empty;
@@ -358,6 +452,56 @@ public partial class MainViewModel : ObservableObject
         MappedFieldCount = 0;
         ParentConversationCount = 0;
         StatusMessage = "All mappings cleared.";
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  DYNAMIC TARGET OUTPUT FIELDS
+    // ═══════════════════════════════════════════════════════════════════
+
+    [ObservableProperty] private string _newTargetFieldName = string.Empty;
+
+    [RelayCommand]
+    private void AddTargetField()
+    {
+        var name = NewTargetFieldName?.Trim();
+        if (string.IsNullOrWhiteSpace(name)) return;
+
+        // Check for duplicate
+        if (FieldMappings.Any(m => m.TargetField.Equals(name, StringComparison.OrdinalIgnoreCase)))
+        {
+            MessageBox.Show($"A field named '{name}' already exists.", "Duplicate Field",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        FieldMappings.Add(new FieldMapping
+        {
+            TargetField = name,
+            Description = "Custom field",
+            IsEnabled = true,
+            IsCustom = true,
+        });
+
+        NewTargetFieldName = string.Empty;
+        StatusMessage = $"Added custom target field: {name}";
+    }
+
+    [RelayCommand]
+    private void RemoveTargetField()
+    {
+        if (SelectedMapping == null) return;
+        if (!SelectedMapping.IsCustom)
+        {
+            MessageBox.Show("Cannot remove built-in fields. Only custom fields can be removed.",
+                "Cannot Remove", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var name = SelectedMapping.TargetField;
+        FieldMappings.Remove(SelectedMapping);
+        SelectedMapping = null;
+        MappedFieldCount = FieldMappings.Count(m => m.IsMapped);
+        StatusMessage = $"Removed custom target field: {name}";
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -383,8 +527,9 @@ public partial class MainViewModel : ObservableObject
         StatusMessage = "Extracting messages…";
         try
         {
+            var childPaths = ChildNodePaths.Count > 0 ? ChildNodePaths.ToList() : new List<string>();
             var messages = MappingService.ExtractMessages(
-                RawContent, DetectedFormat, ParentNodePath, ChildNodePath,
+                RawContent, DetectedFormat, ParentNodePath, childPaths,
                 HierarchyMode, FieldMappings.ToList());
 
             foreach (var msg in messages)
@@ -469,6 +614,7 @@ public partial class MainViewModel : ObservableObject
             Mode = HierarchyMode,
             ParentNodePath = ParentNodePath,
             ChildNodePath = ChildNodePath,
+            ChildNodePaths = ChildNodePaths.ToList(),
             Mappings = FieldMappings.Select(m => new FieldMappingSerialized
             {
                 TargetField = m.TargetField,
@@ -476,6 +622,8 @@ public partial class MainViewModel : ObservableObject
                 DefaultValue = m.DefaultValue,
                 IsEnabled = m.IsEnabled,
                 SourceLevel = m.SourceLevel,
+                IsCustom = m.IsCustom,
+                ChildNodeKey = m.ChildNodeKey,
             }).ToList(),
         };
 
@@ -511,6 +659,10 @@ public partial class MainViewModel : ObservableObject
 
             ParentNodePath = profile.ParentNodePath;
             ChildNodePath = profile.ChildNodePath;
+            ChildNodePaths.Clear();
+            foreach (var cp in profile.ChildNodePaths)
+                ChildNodePaths.Add(cp);
+            UpdateChildPathDisplay();
             HierarchyMode = profile.Mode;
             IsTwoLevelMode = profile.Mode == HierarchyMode.TwoLevel;
             ProfileName = profile.Name;
@@ -519,11 +671,26 @@ public partial class MainViewModel : ObservableObject
             {
                 var target = FieldMappings.FirstOrDefault(m =>
                     m.TargetField.Equals(saved.TargetField, StringComparison.OrdinalIgnoreCase));
-                if (target == null) continue;
+                if (target == null)
+                {
+                    // Custom field from profile — add it
+                    if (saved.IsCustom)
+                    {
+                        target = new FieldMapping
+                        {
+                            TargetField = saved.TargetField,
+                            Description = "Custom field",
+                            IsCustom = true,
+                        };
+                        FieldMappings.Add(target);
+                    }
+                    else continue;
+                }
                 target.SourcePath = saved.SourcePath;
                 target.DefaultValue = saved.DefaultValue;
                 target.IsEnabled = saved.IsEnabled;
                 target.SourceLevel = saved.SourceLevel;
+                target.ChildNodeKey = saved.ChildNodeKey;
                 target.IsMapped = !string.IsNullOrWhiteSpace(saved.SourcePath);
             }
 

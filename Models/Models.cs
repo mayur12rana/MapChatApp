@@ -87,6 +87,7 @@ public partial class SourceNode : ObservableObject
     [ObservableProperty] private string _groupName = string.Empty;
     [ObservableProperty] private int _repeatCount;
     [ObservableProperty] private bool _isSelected;
+    [ObservableProperty] private string _childKey = string.Empty;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -105,6 +106,8 @@ public partial class FieldMapping : ObservableObject
     [ObservableProperty] private string _description = string.Empty;
     [ObservableProperty] private bool _isRequired;
     [ObservableProperty] private SourceLevel _sourceLevel;
+    [ObservableProperty] private bool _isCustom;
+    [ObservableProperty] private string _childNodeKey = string.Empty;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -132,6 +135,9 @@ public class ChatMessage
     public bool IsEdited { get; set; }
     public bool IsDeleted { get; set; }
     public string? ExtendedProperties { get; set; }
+
+    /// <summary>User-defined custom output fields (name → value).</summary>
+    public Dictionary<string, string> CustomFields { get; set; } = new();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -148,6 +154,7 @@ public class MappingProfile
     // Current property names
     public string ParentNodePath { get; set; } = string.Empty;
     public string ChildNodePath { get; set; } = string.Empty;
+    public List<string> ChildNodePaths { get; set; } = new();
 
     // Backward compat: old profiles may have these
     public string? StartNodePath { get; set; }
@@ -163,6 +170,10 @@ public class MappingProfile
             ParentNodePath = StartNodePath;
         if (!string.IsNullOrEmpty(EndNodePath) && string.IsNullOrEmpty(ChildNodePath))
             ChildNodePath = EndNodePath;
+
+        // Migrate single ChildNodePath to ChildNodePaths list
+        if (ChildNodePaths.Count == 0 && !string.IsNullOrEmpty(ChildNodePath))
+            ChildNodePaths.Add(ChildNodePath);
     }
 }
 
@@ -174,4 +185,6 @@ public class FieldMappingSerialized
     public string DefaultValue { get; set; } = string.Empty;
     public bool IsEnabled { get; set; } = true;
     public SourceLevel SourceLevel { get; set; } = SourceLevel.None;
+    public bool IsCustom { get; set; }
+    public string ChildNodeKey { get; set; } = string.Empty;
 }
